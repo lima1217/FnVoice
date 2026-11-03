@@ -124,6 +124,13 @@ extension MetricsTests {
         #expect(AppSettings(defaults: d).recognitionEngine == nil)
     }
 
+    @Test func liveTextDefaultsOnAndPersists() {
+        let d = freshDefaults()
+        #expect(AppSettings(defaults: d).showLiveText)
+        AppSettings(defaults: d).showLiveText = false
+        #expect(!AppSettings(defaults: d).showLiveText)
+    }
+
     @Test func fnUsageHint() {
         #expect(!FnUsageType.needsHint(rawValue: 0))
         #expect(FnUsageType.needsHint(rawValue: 1))

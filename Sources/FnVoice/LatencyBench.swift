@@ -15,6 +15,8 @@ import Speech
         var setup: Double
         var finalize: Double
         var llm: Double?
+        var cer: Double = 0
+        var partials = 0
     }
 
     static func run(arguments args: [String]) async -> Int32 {
@@ -32,6 +34,7 @@ import Speech
         case "lingering": .lingering
         default: .processLifetime
         }
+        let fast = argumentValue("--live-text", in: args).map { $0 == "on" } ?? true
         let language = DictationLanguage.simplifiedChinese
         let vocabulary = Vocabulary.merged(user: [])
 
@@ -58,7 +61,7 @@ import Speech
         var prewarmMs: Double?
         if args.contains("--prewarm") {
             let t = ContinuousClock.now
-            await AnalyzerSession.prewarm(engine: engine, language: language)
+            await AnalyzerSession.prewarm(engine: engine, language: language, fast: fast)
             prewarmMs = ms(ContinuousClock.now - t)
         }
 
@@ -67,10 +70,18 @@ import Speech
             let url = corpusURL.deletingLastPathComponent().appendingPathComponent(c.audio!)
             do {
                 let t0 = ContinuousClock.now
-                let session = try await AnalyzerSession.prepare(engine: engine, language: language, vocabulary: vocabulary)
+                let session = try await AnalyzerSession.prepare(engine: engine, language: language, vocabulary: vocabulary, fast: fast)
                 let setup = ms(ContinuousClock.now - t0)
 
+                var updates = 0
+                var firstUpdate: Double?
+                let audioStart = ContinuousClock.now
+                session.onUpdate = { _ in
+                    updates += 1
+                    if firstUpdate == nil { firstUpdate = ms(ContinuousClock.now - audioStart) }
+                }
                 try await feedRealtime(url, into: session)
+                let updatesDuringAudio = updates
                 let tEnd = ContinuousClock.now
                 let text = await session.finish()
                 let finalize = ms(ContinuousClock.now - tEnd)
@@ -81,14 +92,15 @@ import Speech
                     _ = await refiner.refine(text)
                     llm = ms(ContinuousClock.now - t)
                 }
-                rows.append(Row(id: c.id, setup: setup, finalize: finalize, llm: llm))
-                print("[\(c.id)] setup=\(Int(setup))ms finalize=\(Int(finalize))ms llm=\(llm.map { "\(Int($0))ms" } ?? "-")")
+                let cer = ErrorRate.cer(reference: c.reference, hypothesis: text)
+                rows.append(Row(id: c.id, setup: setup, finalize: finalize, llm: llm, cer: cer, partials: updatesDuringAudio))
+                print("[\(c.id)] setup=\(Int(setup))ms partials-during-audio=\(updatesDuringAudio) first-partial=\(firstUpdate.map { "\(Int($0))ms" } ?? "-") finalize=\(Int(finalize))ms cer=\(String(format: "%.1f%%", ErrorRate.cer(reference: c.reference, hypothesis: text) * 100)) llm=\(llm.map { "\(Int($0))ms" } ?? "-")")
             } catch {
                 print("[\(c.id)] error: \(error)")
             }
         }
 
-        let report = markdown(rows: rows, engine: engine, retention: retentionName, prewarmMs: prewarmMs, llm: refiner != nil)
+        let report = markdown(rows: rows, engine: engine, fast: fast, retention: retentionName, prewarmMs: prewarmMs, llm: refiner != nil)
         print(report)
         if let out = argumentValue("--out", in: args) {
             try? report.write(toFile: out, atomically: true, encoding: .utf8)
@@ -110,7 +122,7 @@ import Speech
             if chunk.frameLength == 0 { break }
             try await Task.sleep(for: .milliseconds(100))
             guard let converter else {
-                session.input.yield(AnalyzerInput(buffer: chunk))
+                session.yield(chunk)
                 continue
             }
             let capacity = AVAudioFrameCount(Double(chunk.frameLength) * session.format.sampleRate / source.sampleRate) + 16
@@ -126,7 +138,7 @@ import Speech
                 status.pointee = .haveData
                 return input
             }
-            if error == nil, out.frameLength > 0 { session.input.yield(AnalyzerInput(buffer: out)) }
+            if error == nil, out.frameLength > 0 { session.yield(out) }
         }
     }
 
@@ -138,12 +150,12 @@ import Speech
         return sorted[min(sorted.count - 1, Int((Double(sorted.count - 1) * p).rounded()))]
     }
 
-    static func markdown(rows: [Row], engine: RecognitionEngine, retention: String, prewarmMs: Double?, llm: Bool) -> String {
+    static func markdown(rows: [Row], engine: RecognitionEngine, fast: Bool, retention: String, prewarmMs: Double?, llm: Bool) -> String {
         let warm = rows.dropFirst()
         let finalize = rows.map(\.finalize)
         let llms = rows.compactMap(\.llm)
         func f(_ x: Double) -> String { "\(Int(x.rounded())) ms" }
-        var out = "## Latency: \(engine.displayName), retention \(retention)\(prewarmMs != nil ? ", prewarmed" : "")\n\n"
+        var out = "## Latency: \(engine.displayName)\(fast ? " (live text)" : " (accurate)"), retention \(retention)\(prewarmMs != nil ? ", prewarmed" : "")\n\n"
         out += "| stage | p50 | p90 |\n|---|---|---|\n"
         if let prewarmMs { out += "| prewarm (once, at launch) | \(f(prewarmMs)) | |\n" }
         if let first = rows.first { out += "| setup, first press | \(f(first.setup)) | |\n" }
@@ -152,6 +164,9 @@ import Speech
         if llm {
             out += "| LLM refinement (\(llms.count)/\(rows.count) sent by gate) | \(f(percentile(llms, 0.5))) | \(f(percentile(llms, 0.9))) |\n"
         }
+        let withLive = rows.filter { $0.partials > 0 }.count
+        let meanCER = rows.isEmpty ? 0 : rows.map(\.cer).reduce(0, +) / Double(rows.count)
+        out += "\nLive text during speech on \(withLive)/\(rows.count) clips. Mean raw CER of final text: \(String(format: "%.1f%%", meanCER * 100)).\n"
         let base = 250 + percentile(finalize, 0.5)
         out += "\nRelease → text, p50, excluding paste: \(f(base)) without LLM"
         if llm { out += ", \(f(base + percentile(llms, 0.5))) with LLM" }

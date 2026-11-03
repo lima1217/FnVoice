@@ -41,3 +41,4 @@ For each cell, check that: ① the text arrives exactly, ② the input method is
 | `make build` twice, relaunch | Accessibility still granted (stable signature) |
 | Turn system Dictation off, dictate | capsule says "Turn on Dictation in System Settings › Keyboard" |
 | Menu › Launch at Login on, log out and back in | FnVoice starts; System Settings › Login Items lists it; toggling off removes it |
+| Recognition Engine › Show Live Text on, dictate a long sentence | text appears in the capsule while speaking; off → only the waveform until release |

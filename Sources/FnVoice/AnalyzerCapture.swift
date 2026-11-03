@@ -26,7 +26,8 @@ struct AnalyzerModule {
     let module: any SpeechModule
     let results: AsyncThrowingStream<(text: String, isFinal: Bool), Error>
 
-    static func make(_ engine: RecognitionEngine, locale: Locale) -> AnalyzerModule {
+    /// - Parameter fast: SpeechTranscriber fast mode (live partials, lower accuracy). Menu › Show Live Text.
+    static func make(_ engine: RecognitionEngine, locale: Locale, fast: Bool) -> AnalyzerModule {
         switch engine {
         case .dictationTranscriber:
             let t = DictationTranscriber(
@@ -35,7 +36,13 @@ struct AnalyzerModule {
             )
             return AnalyzerModule(module: t, results: flatten(t.results) { (String($0.text.characters), $0.isFinal) })
         default:
-            let t = SpeechTranscriber(locale: locale, transcriptionOptions: [], reportingOptions: [.volatileResults], attributeOptions: [])
+            // .fastResults makes partials stream while you speak (first text ~1.2 s in). Without it,
+            // SpeechTranscriber sends nothing until Fn is released, so the capsule stays empty.
+            // It costs accuracy (CER after refinement 5.9% → 9.0%); see README › Recognition engines.
+            // A second, accurate analyzer alongside a fast one was tried and is unreliable: the two
+            // share Apple's speech service and the accurate one returned a single character.
+            let reporting: Set<SpeechTranscriber.ReportingOption> = fast ? [.volatileResults, .fastResults] : [.volatileResults]
+            let t = SpeechTranscriber(locale: locale, transcriptionOptions: [], reportingOptions: reporting, attributeOptions: [])
             return AnalyzerModule(module: t, results: flatten(t.results) { (String($0.text.characters), $0.isFinal) })
         }
     }
@@ -115,6 +122,10 @@ struct AnalyzerModule {
         self.input = input
     }
 
+    func yield(_ buffer: AVAudioPCMBuffer) {
+        input.yield(AnalyzerInput(buffer: buffer))
+    }
+
     /// The analyzer input format for this engine+language if already known (no awaits).
     static func cachedFormat(_ engine: RecognitionEngine, _ language: DictationLanguage) -> AVAudioFormat? {
         setupCache["\(engine.rawValue)|\(language.rawValue)"]?.format
@@ -142,8 +153,8 @@ struct AnalyzerModule {
         return (setup, m)
     }
 
-    static func prepare(engine: RecognitionEngine, language: DictationLanguage, vocabulary: [String]) async throws -> AnalyzerSession {
-        let (setup, module) = try await setup(engine, language) { AnalyzerModule.make(engine, locale: $0) }
+    static func prepare(engine: RecognitionEngine, language: DictationLanguage, vocabulary: [String], fast: Bool) async throws -> AnalyzerSession {
+        let (setup, module) = try await setup(engine, language) { AnalyzerModule.make(engine, locale: $0, fast: fast) }
         let analyzer = SpeechAnalyzer(modules: [module.module], options: .init(priority: .userInitiated, modelRetention: retention))
         let context = AnalysisContext()
         context.contextualStrings[.general] = vocabulary
@@ -173,9 +184,9 @@ struct AnalyzerModule {
     }
 
     /// Loads the model ahead of the first Fn press so that press doesn't pay the load time.
-    static func prewarm(engine: RecognitionEngine, language: DictationLanguage) async {
+    static func prewarm(engine: RecognitionEngine, language: DictationLanguage, fast: Bool) async {
         do {
-            let (setup, module) = try await setup(engine, language) { AnalyzerModule.make(engine, locale: $0) }
+            let (setup, module) = try await setup(engine, language) { AnalyzerModule.make(engine, locale: $0, fast: fast) }
             let analyzer = SpeechAnalyzer(modules: [module.module], options: .init(priority: .utility, modelRetention: retention))
             try await analyzer.prepareToAnalyze(in: setup.format)
             await analyzer.cancelAndFinishNow()
@@ -332,8 +343,12 @@ final class AnalyzerAudioSink: @unchecked Sendable {
     private var configObserver: NSObjectProtocol?
     private var generation = 0
 
-    init(engine: RecognitionEngine) {
+    /// Read at each Fn press, so toggling the menu item applies to the next dictation.
+    private let liveText: () -> Bool
+
+    init(engine: RecognitionEngine, liveText: @escaping () -> Bool) {
         engineKind = engine
+        self.liveText = liveText
     }
 
     func start(language: DictationLanguage, vocabulary: [String]) async throws {
@@ -344,7 +359,7 @@ final class AnalyzerAudioSink: @unchecked Sendable {
         sink.beginCapture()
         try startAudio()
         do {
-            let session = try await AnalyzerSession.prepare(engine: engineKind, language: language, vocabulary: vocabulary)
+            let session = try await AnalyzerSession.prepare(engine: engineKind, language: language, vocabulary: vocabulary, fast: liveText())
             guard gen == generation else {
                 session.cancel()
                 return
@@ -418,11 +433,11 @@ final class AnalyzerAudioSink: @unchecked Sendable {
     }
 
     /// Same engine settings as live dictation, on a file (used by --eval).
-    nonisolated static func transcribeFile(_ url: URL, language: DictationLanguage, vocabulary: [String], engine: RecognitionEngine) async throws -> String {
+    nonisolated static func transcribeFile(_ url: URL, language: DictationLanguage, vocabulary: [String], engine: RecognitionEngine, fast: Bool) async throws -> String {
         guard let locale = await AnalyzerModule.supportedLocale(engine, for: language) else {
             throw CaptureError.unsupportedLanguage(language.rawValue)
         }
-        let module = AnalyzerModule.make(engine, locale: locale)
+        let module = AnalyzerModule.make(engine, locale: locale, fast: fast)
         if let request = try await AssetInventory.assetInstallationRequest(supporting: [module.module]) {
             try await request.downloadAndInstall()
         }

@@ -190,14 +190,15 @@ import ServiceManagement
         let engine = resolvedEngine
         let language = settings.language
         guard engine != .legacy, #available(macOS 26.0, *) else { return }
-        Task { @MainActor in await AnalyzerSession.prewarm(engine: engine, language: language) }
+        let fast = settings.showLiveText
+        Task { @MainActor in await AnalyzerSession.prewarm(engine: engine, language: language, fast: fast) }
     }
 
     private func transcriber(for engine: RecognitionEngine) -> LiveTranscriber {
         guard engine != .legacy else { return legacyEngine }
         if let existing = analyzerEngines[engine] { return existing }
         guard #available(macOS 26.0, *) else { return legacyEngine }
-        let created = AnalyzerCapture(engine: engine)
+        let created = AnalyzerCapture(engine: engine) { [weak self] in self?.settings.showLiveText ?? true }
         created.onPartial = { [weak self] text in self?.capsule.setText(TextFormatter.format(text)) }
         analyzerEngines[engine] = created
         return created
@@ -387,6 +388,17 @@ import ServiceManagement
             }
             engineMenu.addItem(item)
         }
+        engineMenu.addItem(.separator())
+        let live = NSMenuItem(title: "Show Live Text While Speaking", action: #selector(toggleLiveText), keyEquivalent: "")
+        live.target = self
+        live.state = settings.showLiveText ? .on : .off
+        live.toolTip = "SpeechTranscriber: shows text as you speak, slightly less accurate. Off = more accurate, text appears on release."
+        if current != .speechTranscriber {
+            // Only SpeechTranscriber has the trade-off; the legacy engine always streams.
+            live.isEnabled = false
+            live.action = nil
+        }
+        engineMenu.addItem(live)
         engineItem.submenu = engineMenu
         menu.addItem(engineItem)
 
@@ -445,6 +457,12 @@ import ServiceManagement
         settings.recognitionEngine = engine
         prewarm()
         Log.app.info("recognition engine → \(engine.rawValue, privacy: .public)")
+    }
+
+    @objc private func toggleLiveText() {
+        settings.showLiveText.toggle()
+        Log.app.info("live text → \(self.settings.showLiveText)")
+        prewarm()
     }
 
     @objc private func toggleLLM() {

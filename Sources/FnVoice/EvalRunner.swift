@@ -16,6 +16,8 @@ import Speech
         let outPath = argumentValue("--out", in: args) ?? "Eval/report.md"
         let language = argumentValue("--lang", in: args).flatMap(DictationLanguage.init(rawValue:)) ?? .simplifiedChinese
         let corpusURL = URL(fileURLWithPath: corpusPath)
+        // --live-text on|off overrides the menu setting (SpeechTranscriber fast mode).
+        let fast = argumentValue("--live-text", in: args).map { $0 == "on" } ?? AppSettings().showLiveText
         let engine = RecognitionEngine.resolve(
             stored: argumentValue("--engine", in: args).flatMap(RecognitionEngine.init(rawValue:)) ?? AppSettings().recognitionEngine,
             analyzerAvailable: AppController.analyzerAvailable
@@ -71,7 +73,7 @@ import Speech
                     continue
                 }
                 do {
-                    let raw = try await Self.transcribe(url, language: language, vocabulary: vocabulary, engine: engine)
+                    let raw = try await Self.transcribe(url, language: language, vocabulary: vocabulary, engine: engine, fast: fast)
                     row.raw = raw
                     if refiner != nil && !RefinementGate.shouldRefine(raw) {
                         row.refined = raw
@@ -104,7 +106,7 @@ import Speech
         }
 
         let header = """
-            Generated \(ISO8601DateFormatter().string(from: Date())) · language \(language.rawValue) · engine \(engine.displayName) · \
+            Generated \(ISO8601DateFormatter().string(from: Date())) · language \(language.rawValue) · engine \(engine.displayName)\(engine == .speechTranscriber ? (fast ? " (live text / fast)" : " (accurate)") : "") · \
             speech \(speechOK ? "authorized" : "NOT authorized") · LLM \(refiner == nil ? "not configured" : "model \(config.model)")
             """
         let report = EvalReport.markdown(mixed: mixed, correct: correct, llmEnabled: refiner != nil, header: header)
@@ -118,9 +120,9 @@ import Speech
         }
     }
 
-    private static func transcribe(_ url: URL, language: DictationLanguage, vocabulary: [String], engine: RecognitionEngine) async throws -> String {
+    private static func transcribe(_ url: URL, language: DictationLanguage, vocabulary: [String], engine: RecognitionEngine, fast: Bool) async throws -> String {
         if engine != .legacy, #available(macOS 26.0, *) {
-            return try await AnalyzerCapture.transcribeFile(url, language: language, vocabulary: vocabulary, engine: engine)
+            return try await AnalyzerCapture.transcribeFile(url, language: language, vocabulary: vocabulary, engine: engine, fast: fast)
         }
         return try await SpeechCapture.transcribeFile(url, language: language, vocabulary: vocabulary)
     }

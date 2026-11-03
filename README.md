@@ -96,7 +96,8 @@ Choose one in the menu under **Recognition Engine**. The choice is remembered.
 
 | Engine | OS | Mean CER, raw | + DeepSeek refinement |
 |---|---|---|---|
-| **SpeechTranscriber** (default) | macOS 26+ | **11.9%** | **5.9%** (current pipeline) / 5.5% (thinking on, no gate, no vocabulary) |
+| **SpeechTranscriber**, live text on (default) | macOS 26+ | 14.0% | **9.0%** |
+| SpeechTranscriber, live text off | macOS 26+ | **11.9%** | **5.9%** (5.5% with thinking on, no gate, no vocabulary) |
 | DictationTranscriber | macOS 26+ | 18.3% | not run |
 | SFSpeechRecognizer (legacy) | macOS 14+ | 18.7% | 16.6% |
 
@@ -104,7 +105,13 @@ Measured with `make eval` on the 40 mixed zh/en clips in `Eval/corpus.jsonl`: sy
 
 Why SpeechTranscriber plus the LLM works so well together: legacy turns English words into Chinese sound-alikes (Python → "P3", token → "巧克力"), which an LLM can rarely recover. SpeechTranscriber writes English as near-miss Latin spellings instead (`piston`, `Qberneet`, `sleck`), and the LLM fixes those reliably. Per clip, it beats legacy on 17, loses on 9 and ties on 14.
 
-The current pipeline trades 0.4 points of CER for ~2–3 s less waiting:
+**Show Live Text While Speaking** (menu › Recognition Engine; on by default) is a real trade-off:
+- In accurate mode, SpeechTranscriber sends no text until Fn is released, so the capsule only shows the waveform.
+- Turning on `.fastResults` streams text into the capsule from about 1.2 s in (on 40/40 clips), and finalize drops from ~110 ms to ~55 ms.
+- The cost is accuracy: CER after DeepSeek goes from 5.9% to 9.0%.
+- Running a fast analyzer for display next to an accurate one for typing doesn't work. The two share Apple's speech service, and the accurate one intermittently returned a single character.
+
+With live text off, the current pipeline trades 0.4 points of CER for ~2–3 s less waiting:
 - Vocabulary in the prompt fixed `bok→bug`, `PER greview→PR review` and `cle→CLI`.
 - With thinking off, the LLM no longer fixes pure-Chinese homophones (`返回只→返回值`, `钱端→前端`).
 - The gate skipped `都可能` (Docker), which has no English letters.

@@ -59,6 +59,7 @@ public final class AppSettings: @unchecked Sendable {
         static let llmModel = "llmModel"
         static let fnHintShown = "fnUsageHintShown"
         static let engine = "recognitionEngine"
+        static let liveText = "showLiveText"
     }
 
     private let defaults: UserDefaults
@@ -91,6 +92,13 @@ public final class AppSettings: @unchecked Sendable {
     public var recognitionEngine: RecognitionEngine? {
         get { defaults.string(forKey: Key.engine).flatMap(RecognitionEngine.init(rawValue:)) }
         set { defaults.set(newValue?.rawValue, forKey: Key.engine) }
+    }
+
+    /// SpeechTranscriber fast mode: text appears in the capsule while you speak, at some cost in
+    /// accuracy (eval CER after refinement 9.0% vs 5.9%). Default on.
+    public var showLiveText: Bool {
+        get { defaults.object(forKey: Key.liveText) as? Bool ?? true }
+        set { defaults.set(newValue, forKey: Key.liveText) }
     }
 
     public var fnHintShown: Bool {
