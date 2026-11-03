@@ -7,6 +7,11 @@ import AppKit
         let args = CommandLine.arguments
         if args.contains("--eval") {
             Task { @MainActor in exit(await EvalRunner.run(arguments: args)) }
+        } else if args.contains("--latency-bench") {
+            Task { @MainActor in
+                guard #available(macOS 26.0, *) else { exit(64) }
+                exit(await LatencyBench.run(arguments: args))
+            }
         } else if args.contains("--selftest-inject") {
             Task { @MainActor in exit(await InjectSelfTest.run(arguments: args)) }
         } else {

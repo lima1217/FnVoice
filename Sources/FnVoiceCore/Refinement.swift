@@ -21,6 +21,19 @@ public enum RefinementPrompt {
     Output only the transcript text.
     """
 
+    /// The base prompt plus the speaker's vocabulary. ASR biasing via contextualStrings barely
+    /// moves SpeechTranscriber, so the term list is given to the LLM instead.
+    public static func system(vocabulary: [String]) -> String {
+        guard !vocabulary.isEmpty else { return system }
+        return system + """
+
+
+            Terms this speaker uses. When a recognized word is clearly a garbled version of one of these, \
+            write it with this exact spelling. Never insert a term that wasn't spoken:
+            \(vocabulary.joined(separator: ", "))
+            """
+    }
+
     public static func user(_ transcript: String) -> String {
         "<transcript>\n\(transcript)\n</transcript>"
     }
@@ -179,6 +192,19 @@ public struct EditGuard: Sendable {
     }
 }
 
+/// Decides whether a transcript is worth an LLM round trip. In the eval, recognition errors were
+/// almost all in English terms; pure Chinese came out right. Text with no English letters and no
+/// known sound-alike skips the LLM and is typed immediately.
+public enum RefinementGate {
+    /// Chinese renderings of English terms the legacy recognizer produces.
+    static let soundAlikes = ["配森", "派森", "杰森", "加瓦", "吉特", "瑞艾克特", "诶批爱", "迪普洛伊", "托肯"]
+
+    public static func shouldRefine(_ text: String) -> Bool {
+        if text.contains(where: { $0.isASCII && $0.isLetter }) { return true }
+        return soundAlikes.contains { text.contains($0) }
+    }
+}
+
 public struct RefineOutcome: Equatable, Sendable {
     public var text: String
     public var usedLLM: Bool
@@ -190,15 +216,18 @@ public struct RefineOutcome: Equatable, Sendable {
 public struct Refiner: Sendable {
     let client: any LLMClient
     let editGuard: EditGuard
+    let vocabulary: [String]
 
-    public init(client: any LLMClient, editGuard: EditGuard = EditGuard()) {
+    public init(client: any LLMClient, vocabulary: [String] = [], editGuard: EditGuard = EditGuard()) {
         self.client = client
+        self.vocabulary = vocabulary
         self.editGuard = editGuard
     }
 
     public func refine(_ raw: String) async -> RefineOutcome {
         do {
-            let output = try await client.complete(system: RefinementPrompt.system, user: RefinementPrompt.user(raw))
+            let system = RefinementPrompt.system(vocabulary: vocabulary)
+            let output = try await client.complete(system: system, user: RefinementPrompt.user(raw))
             let cleaned = OutputSanitizer.clean(output, original: raw)
             if let reason = editGuard.rejection(original: raw, candidate: cleaned) {
                 return RefineOutcome(text: raw, usedLLM: false, fallbackReason: "guardrail: \(reason)")

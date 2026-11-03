@@ -28,6 +28,8 @@ import ServiceManagement
     private var tapRetryTimer: Timer?
     private var targetPID: Int32?
     private var signpostState: OSSignpostIntervalState?
+    /// Per-dictation timestamps for the latency log line.
+    private var timing = LatencyTiming()
 
     private var llmConfig: LLMConfig {
         LLMConfig(baseURL: settings.llmBaseURL, apiKey: apiKey, model: settings.llmModel)
@@ -41,7 +43,7 @@ import ServiceManagement
         statusItem.menu = menu
 
         installEditMenu()
-        legacyEngine.onPartial = { [weak self] text in self?.capsule.setText(text) }
+        legacyEngine.onPartial = { [weak self] text in self?.capsule.setText(TextFormatter.format(text)) }
         hotkeys.isCancellable = { [weak self] in self?.machine.phase.isCancellable ?? false }
         hotkeys.onAction = { [weak self] action in self?.handleKey(action) }
         installTapOrRetry()
@@ -55,6 +57,7 @@ import ServiceManagement
             if !Permissions.isGranted(.accessibility) { await Permissions.request(.accessibility) }
             self.showFnHintIfNeeded()
         }
+        prewarm()
         Log.app.info("started; language=\(self.settings.language.rawValue, privacy: .public) engine=\(self.resolvedEngine.rawValue, privacy: .public)")
     }
 
@@ -97,17 +100,20 @@ import ServiceManagement
             startCapture(session: s)
 
         case .stopCapture(let s):
+            timing.release = .now
             durationLimitTask?.cancel()
             signpostState = Log.signposter.beginInterval("release-to-inject")
             Task { @MainActor in
                 await self.startTask?.value // Fn released while the engine was still starting
                 let (text, error) = await self.active.finish()
+                self.timing.asrDone = .now
                 Log.asr.debug("final transcript: \(text, privacy: .private)")
                 if let error {
                     self.send(.captureFailed(session: s, message: error))
                     return
                 }
-                let refine = self.settings.llmEnabled && self.llmConfig.isConfigured
+                // Pure-Chinese text was almost always right in the eval: skip the LLM round trip for it.
+                let refine = self.settings.llmEnabled && self.llmConfig.isConfigured && RefinementGate.shouldRefine(text)
                 self.send(.transcriptFinal(session: s, text: text, refine: refine))
             }
 
@@ -118,9 +124,11 @@ import ServiceManagement
 
         case .refine(let s, let text):
             capsule.showRefining()
-            let refiner = Refiner(client: OpenAICompatibleClient(config: llmConfig))
+            let refiner = Refiner(client: OpenAICompatibleClient(config: llmConfig), vocabulary: currentVocabulary())
             refineTask = Task { @MainActor in
+                self.timing.refineStart = .now
                 let outcome = await refiner.refine(text)
+                self.timing.refineDone = .now
                 if let reason = outcome.fallbackReason {
                     Log.llm.notice("refinement fell back to raw text: \(reason, privacy: .public)")
                 }
@@ -132,12 +140,15 @@ import ServiceManagement
             refineTask?.cancel()
             refineTask = nil
 
-        case .inject(let s, let text):
+        case .inject(let s, let raw):
+            let text = TextFormatter.format(raw)
             capsule.setText(text)
             Task { @MainActor in
                 var notice: String?
                 do {
-                    let report = try await self.injector.inject(text, expectedPID: self.targetPID)
+                    let report = try await self.injector.inject(text, expectedPID: self.targetPID) {
+                        self.timing.pasted = .now
+                    }
                     Log.inject.info("""
                         injected switchedIS=\(report.switchedInputSource) restoredIS=\(report.inputSourceRestored) \
                         restoredClipboard=\(report.clipboardRestored)
@@ -149,6 +160,7 @@ import ServiceManagement
                 } catch {
                     notice = error.localizedDescription
                 }
+                self.timing.log(engine: self.active is SpeechCapture ? "legacy" : self.resolvedEngine.rawValue)
                 if let state = self.signpostState {
                     Log.signposter.endInterval("release-to-inject", state)
                     self.signpostState = nil
@@ -173,12 +185,20 @@ import ServiceManagement
         RecognitionEngine.resolve(stored: settings.recognitionEngine, analyzerAvailable: Self.analyzerAvailable)
     }
 
+    /// Loads the current engine's model in the background so the first Fn press is fast.
+    private func prewarm() {
+        let engine = resolvedEngine
+        let language = settings.language
+        guard engine != .legacy, #available(macOS 26.0, *) else { return }
+        Task { @MainActor in await AnalyzerSession.prewarm(engine: engine, language: language) }
+    }
+
     private func transcriber(for engine: RecognitionEngine) -> LiveTranscriber {
         guard engine != .legacy else { return legacyEngine }
         if let existing = analyzerEngines[engine] { return existing }
         guard #available(macOS 26.0, *) else { return legacyEngine }
         let created = AnalyzerCapture(engine: engine)
-        created.onPartial = { [weak self] text in self?.capsule.setText(text) }
+        created.onPartial = { [weak self] text in self?.capsule.setText(TextFormatter.format(text)) }
         analyzerEngines[engine] = created
         return created
     }
@@ -188,6 +208,7 @@ import ServiceManagement
             send(.captureFailed(session: s, message: "\(p.title) permission needed — see menu"))
             return
         }
+        timing = LatencyTiming(press: .now)
         let engine = transcriber(for: resolvedEngine)
         let language = settings.language
         let vocabulary = currentVocabulary()
@@ -213,6 +234,7 @@ import ServiceManagement
                 self.send(.captureFailed(session: s, message: error.localizedDescription))
                 return
             }
+            self.timing.ready = .now
             // Server-based recognition stops at ~1 minute; finalize just before rather than losing audio.
             if !self.active.isOnDevice {
                 self.durationLimitTask = Task { @MainActor in
@@ -415,11 +437,13 @@ import ServiceManagement
     @objc private func selectLanguage(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String, let lang = DictationLanguage(rawValue: raw) else { return }
         settings.language = lang
+        prewarm()
     }
 
     @objc private func selectEngine(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String, let engine = RecognitionEngine(rawValue: raw) else { return }
         settings.recognitionEngine = engine
+        prewarm()
         Log.app.info("recognition engine → \(engine.rawValue, privacy: .public)")
     }
 
@@ -459,5 +483,29 @@ import ServiceManagement
     @objc private func editVocabulary() {
         ensureVocabularyFile()
         NSWorkspace.shared.open(Self.vocabularyURL)
+    }
+}
+
+/// Timestamps of one dictation. Logged as one line, e.g.
+/// `latency engine=speechTranscriber setup=120ms asr=310ms llm=640ms paste=95ms release→text=1045ms`.
+struct LatencyTiming {
+    var press: ContinuousClock.Instant?
+    var ready: ContinuousClock.Instant?
+    var release: ContinuousClock.Instant?
+    var asrDone: ContinuousClock.Instant?
+    var refineStart: ContinuousClock.Instant?
+    var refineDone: ContinuousClock.Instant?
+    var pasted: ContinuousClock.Instant?
+
+    static func ms(_ a: ContinuousClock.Instant?, _ b: ContinuousClock.Instant?) -> String {
+        guard let a, let b else { return "-" }
+        return "\(Int((b - a) / .milliseconds(1)))ms"
+    }
+
+    func log(engine: String) {
+        let pasteFrom = refineDone ?? asrDone
+        let line = "engine=\(engine) setup=\(Self.ms(press, ready)) asr=\(Self.ms(release, asrDone)) "
+            + "llm=\(Self.ms(refineStart, refineDone)) paste=\(Self.ms(pasteFrom, pasted)) release→text=\(Self.ms(release, pasted))"
+        Log.app.info("latency \(line, privacy: .public)")
     }
 }

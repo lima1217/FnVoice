@@ -30,6 +30,7 @@ To start FnVoice at login, run `make install` and enable **Launch at Login** in 
 | `make verify` | codesign strict verify, entitlements, Info.plist lint, LSUIElement, Gatekeeper (informational) |
 | `make e2e` | real injection into InjectProbe under ABC and your first enabled CJK input method; needs Accessibility for FnVoice.app |
 | `make eval` | ASR + refinement over `Eval/corpus.jsonl`, writes `Eval/report.md` (`ENGINE=legacy\|speechTranscriber\|dictationTranscriber`, `EVAL_OUT=…`) |
+| `make bench` | real-time latency benchmark of the SpeechAnalyzer path, writes `Eval/latency.md` |
 | `make mock-llm` | mock OpenAI-compatible server on `:8765` (key `test-key`) for trying Settings › Test |
 
 ## Signing (why it matters)
@@ -59,14 +60,34 @@ Fn down ─▶ arming (150 ms) ─▶ recording ─▶ Fn up ─▶ finalizing �
   - Otherwise it snapshots every pasteboard item and type, then writes the text marked `org.nspasteboard.TransientType`/`ConcealedType`.
   - For CJK input methods it switches to ABC/US, waits until the switch has actually taken effect, sends ⌘V using the "v" key in the current layout, then switches back and verifies.
   - The clipboard is restored 300 ms later, but only if nothing else was copied in the meantime.
+- **Spacing** (`TextFormatter`): every injected text gets one space on both sides of an English word next to Chinese or Japanese (`用 Python 写`). Numbers stay attached (`5分钟`), there is no space next to full-width punctuation, and English and Korean spacing is left alone. Only whitespace changes, never characters.
 - **LLM refinement** (`Refiner`):
+  - **Gate** (`RefinementGate`): only text containing English letters (or a known sound-alike like 配森) is sent to the LLM. Pure Chinese is typed immediately, saving about 1.1 s.
+  - The prompt includes your vocabulary (built-in terms plus Edit Vocabulary…) as "terms this speaker uses". SpeechTranscriber barely reacts to `contextualStrings`, but the LLM does.
+  - For DeepSeek hosts, `thinking: {type: disabled}` is sent automatically. `deepseek-flash` otherwise produces 200–800 hidden reasoning tokens (3–6 s) for a ~10-token correction.
   - Uses temperature 0 and a 4 s hard timeout. The transcript is wrapped in `<transcript>` tags, and the prompt says it is data, not instructions.
   - The output is cleaned of fences, prefixes and quotes, then checked by an **edit guardrail**. The guardrail tokenizes the text (Latin word = 1 token, CJK char = 1 token) and diffs it into hunks. Replacing a short span with 1–2 Latin words counts as one edit (配森→Python); every other change costs one edit per token.
   - Output that changes more than 30% is discarded.
   - Any error, timeout, cancellation or guardrail rejection injects the raw transcript. Your words are never lost.
   - The API key is stored in the Keychain; clearing the field and saving deletes it.
 
-Logs: `log stream --predicate 'subsystem == "com.local.fnvoice"' --info`. Transcripts are logged only at debug level and redacted. Latency from release to injection is a signpost interval (`release-to-inject`) you can view in Instruments › Points of Interest.
+Logs: `log stream --predicate 'subsystem == "com.local.fnvoice"' --info`. Transcripts are logged only at debug level and redacted. Every dictation logs one line such as `latency engine=speechTranscriber setup=0ms asr=360ms llm=1100ms paste=40ms release→text=1500ms`, and `release-to-inject` is also a signpost interval in Instruments › Points of Interest.
+
+## Latency
+
+`make bench` streams corpus clips through the live SpeechAnalyzer code path at real-time pace and reports per-stage times. Results for 10 clips with SpeechTranscriber and `deepseek-flash`, thinking disabled:
+
+| Stage | p50 | p90 |
+|---|---|---|
+| setup, first press after launch | 0 ms (prewarmed at launch; 170 ms without) | |
+| trailing capture after Fn-up | 250 ms (fixed) | |
+| finalize, end of audio → text | 110 ms | 126 ms |
+| LLM refinement | 1098 ms | 1663 ms |
+| **release → text** | **~360 ms without LLM, ~1.46 s with LLM** | |
+
+Before thinking was disabled, the LLM stage alone took 2.8–4.7 s, and one probe call took 6.0 s, past the 4 s timeout. Options: `make bench BENCH_ARGS="--retention whileInUse"`, `--no-llm`, `--llm-probe` (prints DeepSeek token usage and timing; the key is never printed). The reports are in `Eval/latency-*.md`.
+
+The mic starts before the analyzer is ready, and audio is buffered meanwhile, so words spoken right at Fn-down aren't lost. The model is kept loaded for the app's lifetime (`modelRetention: .processLifetime`). Its memory cost hasn't been measured.
 
 ## Recognition engines
 
@@ -74,7 +95,7 @@ Choose one in the menu under **Recognition Engine**. The choice is remembered.
 
 | Engine | OS | Mean CER, raw | + DeepSeek refinement |
 |---|---|---|---|
-| **SpeechTranscriber** (default) | macOS 26+ | **11.9%** | **5.5%** |
+| **SpeechTranscriber** (default) | macOS 26+ | **11.9%** | **5.9%** (current pipeline) / 5.5% (thinking on, no gate, no vocabulary) |
 | DictationTranscriber | macOS 26+ | 18.3% | not run |
 | SFSpeechRecognizer (legacy) | macOS 14+ | 18.7% | 16.6% |
 
@@ -82,8 +103,13 @@ Measured with `make eval` on the 40 mixed zh/en clips in `Eval/corpus.jsonl`: sy
 
 Why SpeechTranscriber plus the LLM works so well together: legacy turns English words into Chinese sound-alikes (Python → "P3", token → "巧克力"), which an LLM can rarely recover. SpeechTranscriber writes English as near-miss Latin spellings instead (`piston`, `Qberneet`, `sleck`), and the LLM fixes those reliably. Per clip, it beats legacy on 17, loses on 9 and ties on 14.
 
+The current pipeline trades 0.4 points of CER for ~2–3 s less waiting:
+- Vocabulary in the prompt fixed `bok→bug`, `PER greview→PR review` and `cle→CLI`.
+- With thinking off, the LLM no longer fixes pure-Chinese homophones (`返回只→返回值`, `钱端→前端`).
+- The gate skipped `都可能` (Docker), which has no English letters.
+
 Some behavior to know about:
-- SpeechTranscriber inserts a space before Latin words (`用 Python写`) and sometimes ends with `。`.
+- SpeechTranscriber inserts a space before Latin words only (`用 Python写`); `TextFormatter` normalizes that. It sometimes ends with `。`.
 - Custom vocabulary (`contextualStrings`) seemed to have little effect on it in these runs.
 - On macOS 14/15 every engine falls back to legacy.
 - The first time you dictate in a language without a SpeechAnalyzer model installed, FnVoice downloads the model in the background and uses legacy until it's ready.

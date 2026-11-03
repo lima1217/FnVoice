@@ -16,6 +16,10 @@ public struct LLMConfig: Equatable, Sendable {
         chatCompletionsURL != nil && !model.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
+    var isDeepSeek: Bool {
+        chatCompletionsURL?.host?.lowercased().hasSuffix("deepseek.com") ?? false
+    }
+
     /// Accepts `https://host/v1`, `https://host/v1/`, or a full `.../chat/completions` URL.
     public var chatCompletionsURL: URL? {
         var s = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -75,16 +79,7 @@ public struct OpenAICompatibleClient: LLMClient {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         let key = config.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         if !key.isEmpty { request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization") }
-        let body: [String: Any] = [
-            "model": config.model.trimmingCharacters(in: .whitespaces),
-            "temperature": 0,
-            "stream": false,
-            "messages": [
-                ["role": "system", "content": system],
-                ["role": "user", "content": user],
-            ],
-        ]
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        request.httpBody = try JSONSerialization.data(withJSONObject: Self.requestBody(config: config, system: system, user: user))
 
         let session = self.session
         let timeout = self.timeout
@@ -117,6 +112,23 @@ public struct OpenAICompatibleClient: LLMClient {
         default: throw LLMError.http(http.statusCode)
         }
         return try Self.parseContent(data)
+    }
+
+    static func requestBody(config: LLMConfig, system: String, user: String) -> [String: Any] {
+        var body: [String: Any] = [
+            "model": config.model.trimmingCharacters(in: .whitespaces),
+            "temperature": 0,
+            "stream": false,
+            "messages": [
+                ["role": "system", "content": system],
+                ["role": "user", "content": user],
+            ],
+        ]
+        // DeepSeek's hybrid models think by default: 200–800 hidden tokens and 3–6 s for a
+        // ~10-token correction, versus ~1 s without. Other providers reject unknown fields,
+        // so this is only sent to DeepSeek.
+        if config.isDeepSeek { body["thinking"] = ["type": "disabled"] }
+        return body
     }
 
     static func parseContent(_ data: Data) throws -> String {

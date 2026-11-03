@@ -60,6 +60,18 @@ final class MockLLMServer: Sendable {
         #expect(!LLMConfig(baseURL: "", apiKey: "k", model: "m").isConfigured)
     }
 
+    @Test func thinkingDisabledOnlyForDeepSeek() {
+        let deepseek = LLMConfig(baseURL: "https://api.deepseek.com/v1", apiKey: "k", model: "deepseek-flash")
+        let body = OpenAICompatibleClient.requestBody(config: deepseek, system: "s", user: "u")
+        #expect((body["thinking"] as? [String: String]) == ["type": "disabled"])
+        #expect((body["temperature"] as? Int) == 0)
+
+        for base in ["https://api.openai.com/v1", "http://localhost:11434/v1", "https://notdeepseek.com.evil.io/v1"] {
+            let other = LLMConfig(baseURL: base, apiKey: "k", model: "m")
+            #expect(OpenAICompatibleClient.requestBody(config: other, system: "s", user: "u")["thinking"] == nil)
+        }
+    }
+
     @Test func parsesOpenAIResponseShape() throws {
         let ok = #"{"choices":[{"message":{"role":"assistant","content":"hi"}}]}"#
         #expect(try OpenAICompatibleClient.parseContent(Data(ok.utf8)) == "hi")

@@ -37,13 +37,16 @@ import Speech
             apiKey: env["FNVOICE_LLM_API_KEY"] ?? Keychain.readAPIKey(),
             model: env["FNVOICE_LLM_MODEL"] ?? settings.llmModel
         )
-        let refiner = config.isConfigured ? Refiner(client: OpenAICompatibleClient(config: config, timeout: .seconds(15))) : nil
+        let userVocabulary = (try? String(contentsOf: AppController.vocabularyURL, encoding: .utf8)).map(Vocabulary.parse) ?? []
+        let vocabulary = Vocabulary.merged(user: userVocabulary)
+        let refiner = config.isConfigured
+            ? Refiner(client: OpenAICompatibleClient(config: config, timeout: .seconds(15)), vocabulary: vocabulary)
+            : nil
 
         var speechOK = SFSpeechRecognizer.authorizationStatus() == .authorized
         if !speechOK && SFSpeechRecognizer.authorizationStatus() == .notDetermined {
             speechOK = await Permissions.requestSpeech() == .authorized
         }
-        let vocabulary = Vocabulary.merged(user: [])
 
         var mixed: [EvalRow] = []
         var correct: [EvalRow] = []
@@ -70,7 +73,10 @@ import Speech
                 do {
                     let raw = try await Self.transcribe(url, language: language, vocabulary: vocabulary, engine: engine)
                     row.raw = raw
-                    if let refiner {
+                    if refiner != nil && !RefinementGate.shouldRefine(raw) {
+                        row.refined = raw
+                        row.note = "LLM skipped (no English)"
+                    } else if let refiner {
                         let outcome = await refiner.refine(raw)
                         row.refined = outcome.text
                         row.note = outcome.fallbackReason
@@ -83,7 +89,11 @@ import Speech
 
             case .correct:
                 var row = EvalRow(id: c.id, reference: c.reference, raw: c.reference, refined: nil)
-                if let refiner {
+                if refiner != nil && !RefinementGate.shouldRefine(c.reference) {
+                    row.refined = c.reference
+                    row.note = "LLM skipped (no English)"
+                    print("[\(c.id)] skipped by gate")
+                } else if let refiner {
                     let outcome = await refiner.refine(c.reference)
                     row.refined = outcome.text
                     row.note = outcome.fallbackReason

@@ -100,7 +100,8 @@ public typealias Sleeper = @Sendable (Duration) async -> Void
 
     /// - Parameter expectedPID: the app that was frontmost when Fn went down. If the user has
     ///   switched apps since (LLM refinement can take seconds), we don't paste into the wrong place.
-    public func inject(_ text: String, expectedPID: Int32?) async throws -> InjectionReport {
+    /// - Parameter onPasted: called right after ⌘V is posted (the moment text appears), for latency logging.
+    public func inject(_ text: String, expectedPID: Int32?, onPasted: () -> Void = {}) async throws -> InjectionReport {
         if system.isSecureInputEnabled { throw InjectionError.secureInput }
         if let expectedPID, let now = system.frontmostPID(), now != expectedPID {
             pasteboard.writePlain(text)
@@ -120,6 +121,7 @@ public typealias Sleeper = @Sendable (Duration) async -> Void
         }
 
         poster.postPaste()
+        onPasted()
         await sleep(timing.afterPaste)
 
         var restoredSource = true

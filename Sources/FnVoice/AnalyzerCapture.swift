@@ -84,25 +84,177 @@ struct AnalyzerModule {
     }
 }
 
-/// Converts mic buffers to the analyzer's format on the audio thread and feeds the input stream.
+/// One recognition pass through SpeechAnalyzer: set up, fed audio by its owner (mic or file), finished.
+/// Shared by live dictation and `--latency-bench`, so the benchmark measures the shipped code path.
+@available(macOS 26.0, *)
+@MainActor final class AnalyzerSession {
+    /// How long the model stays loaded after a session. `.processLifetime` keeps the menu-bar app
+    /// ready for the next Fn press; chosen from `--latency-bench` (see README › Latency).
+    static var retention: SpeechAnalyzer.Options.ModelRetention = .processLifetime
+
+    private struct Setup {
+        let locale: Locale
+        let format: AVAudioFormat
+    }
+
+    /// Locale resolution, asset check and audio format cost several awaits; cache them per engine+language.
+    private static var setupCache: [String: Setup] = [:]
+
+    let format: AVAudioFormat
+    let input: AsyncStream<AnalyzerInput>.Continuation
+    var onUpdate: ((String) -> Void)?
+    private(set) var error: String?
+    private let analyzer: SpeechAnalyzer
+    private var transcript = AnalyzerModule.Transcript()
+    private var resultsTask: Task<Void, Never>?
+    private var finished = false
+
+    private init(analyzer: SpeechAnalyzer, format: AVAudioFormat, input: AsyncStream<AnalyzerInput>.Continuation) {
+        self.analyzer = analyzer
+        self.format = format
+        self.input = input
+    }
+
+    /// The analyzer input format for this engine+language if already known (no awaits).
+    static func cachedFormat(_ engine: RecognitionEngine, _ language: DictationLanguage) -> AVAudioFormat? {
+        setupCache["\(engine.rawValue)|\(language.rawValue)"]?.format
+    }
+
+    private static func setup(_ engine: RecognitionEngine, _ language: DictationLanguage, module: (Locale) -> AnalyzerModule) async throws -> (Setup, AnalyzerModule) {
+        let key = "\(engine.rawValue)|\(language.rawValue)"
+        if let cached = setupCache[key] { return (cached, module(cached.locale)) }
+        guard let locale = await AnalyzerModule.supportedLocale(engine, for: language) else {
+            throw CaptureError.unsupportedLanguage(language.rawValue)
+        }
+        let m = module(locale)
+        // assetInstallationRequest returns a request even for installed models, so ask for status instead.
+        if await AssetInventory.status(forModules: [m.module]) != .installed {
+            if let request = try await AssetInventory.assetInstallationRequest(supporting: [m.module]) {
+                Task.detached { try? await request.downloadAndInstall() }
+            }
+            throw CaptureError.modelDownloading(language.rawValue)
+        }
+        guard let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [m.module]) else {
+            throw CaptureError.engine("no compatible audio format")
+        }
+        let setup = Setup(locale: locale, format: format)
+        setupCache[key] = setup
+        return (setup, m)
+    }
+
+    static func prepare(engine: RecognitionEngine, language: DictationLanguage, vocabulary: [String]) async throws -> AnalyzerSession {
+        let (setup, module) = try await setup(engine, language) { AnalyzerModule.make(engine, locale: $0) }
+        let analyzer = SpeechAnalyzer(modules: [module.module], options: .init(priority: .userInitiated, modelRetention: retention))
+        let context = AnalysisContext()
+        context.contextualStrings[.general] = vocabulary
+        try? await analyzer.setContext(context)
+
+        let (stream, continuation) = AsyncStream<AnalyzerInput>.makeStream()
+        let session = AnalyzerSession(analyzer: analyzer, format: setup.format, input: continuation)
+        session.resultsTask = Task { [weak session] in
+            do {
+                for try await (text, isFinal) in module.results {
+                    guard let session else { return }
+                    session.transcript.apply(text, isFinal: isFinal)
+                    session.onUpdate?(session.transcript.text)
+                }
+            } catch is CancellationError {
+            } catch {
+                Log.asr.notice("analyzer results ended with error: \(error.localizedDescription, privacy: .public)")
+                session?.error = "Recognition failed: \(error.localizedDescription)"
+            }
+        }
+        do {
+            try await analyzer.start(inputSequence: stream)
+        } catch {
+            throw CaptureError.engine("analyzer start: \(error)")
+        }
+        return session
+    }
+
+    /// Loads the model ahead of the first Fn press so that press doesn't pay the load time.
+    static func prewarm(engine: RecognitionEngine, language: DictationLanguage) async {
+        do {
+            let (setup, module) = try await setup(engine, language) { AnalyzerModule.make(engine, locale: $0) }
+            let analyzer = SpeechAnalyzer(modules: [module.module], options: .init(priority: .utility, modelRetention: retention))
+            try await analyzer.prepareToAnalyze(in: setup.format)
+            await analyzer.cancelAndFinishNow()
+            Log.asr.info("prewarmed \(engine.rawValue, privacy: .public)/\(language.rawValue, privacy: .public)")
+        } catch {
+            Log.asr.notice("prewarm skipped: \(String(describing: error), privacy: .public)")
+        }
+    }
+
+    /// Ends input and waits (bounded) for the final text.
+    func finish(timeout: Duration = .milliseconds(1500)) async -> String {
+        guard !finished else { return transcript.text }
+        finished = true
+        input.finish()
+        let analyzer = self.analyzer
+        let watchdog = Task {
+            try await Task.sleep(for: timeout)
+            Log.asr.notice("analyzer finalization timed out; using results so far")
+            await analyzer.cancelAndFinishNow()
+        }
+        do {
+            try await analyzer.finalizeAndFinishThroughEndOfInput()
+        } catch {
+            Log.asr.notice("analyzer finalize failed: \(error.localizedDescription, privacy: .public)")
+        }
+        await resultsTask?.value
+        watchdog.cancel()
+        return transcript.text
+    }
+
+    func cancel() {
+        guard !finished else { return }
+        finished = true
+        input.finish()
+        resultsTask?.cancel()
+        let analyzer = self.analyzer
+        Task { await analyzer.cancelAndFinishNow() }
+    }
+}
+
+/// Mic buffers → analyzer input, on the audio thread. Until a session is attached, buffers are
+/// held (copied) so speech in the first moments after Fn-down isn't lost while the model loads.
 @available(macOS 26.0, *)
 final class AnalyzerAudioSink: @unchecked Sendable {
     private let lock = NSLock()
     private var converter: AVAudioConverter?
     private var target: AVAudioFormat?
     private var continuation: AsyncStream<AnalyzerInput>.Continuation?
+    private var pending: [AVAudioPCMBuffer] = []
+    private var capturing = false
+    /// ~10 s of 1024-frame buffers at 48 kHz.
+    private let maxPending = 500
     let levels = LevelBox()
 
-    func configure(input: AVAudioFormat, target: AVAudioFormat, continuation: AsyncStream<AnalyzerInput>.Continuation?) {
+    func beginCapture() {
+        lock.withLock {
+            pending = []
+            capturing = true
+            continuation = nil
+            target = nil
+            converter = nil
+        }
+    }
+
+    func attach(target: AVAudioFormat, continuation: AsyncStream<AnalyzerInput>.Continuation) {
         lock.withLock {
             self.target = target
-            self.converter = input == target ? nil : AVAudioConverter(from: input, to: target)
             self.continuation = continuation
+            for buffer in pending { convertAndYield(buffer) }
+            pending = []
         }
     }
 
     func detach() {
-        lock.withLock { continuation = nil }
+        lock.withLock {
+            capturing = false
+            continuation = nil
+            pending = []
+        }
         levels.set(0)
     }
 
@@ -111,28 +263,52 @@ final class AnalyzerAudioSink: @unchecked Sendable {
             levels.set(LevelMeter.level(UnsafeBufferPointer(start: channel, count: Int(buffer.frameLength))))
         }
         lock.withLock {
-            guard let continuation, let target else { return }
-            guard let converter else {
-                continuation.yield(AnalyzerInput(buffer: buffer))
-                return
+            if continuation != nil {
+                convertAndYield(buffer)
+            } else if capturing, pending.count < maxPending, let copy = Self.copy(buffer) {
+                pending.append(copy) // the tap may reuse its buffer
             }
-            let ratio = target.sampleRate / buffer.format.sampleRate
-            let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 16
-            guard let out = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: capacity) else { return }
-            let once = OnceFlag() // hand the converter this one buffer, then report "no more for now"
-            // The input block runs synchronously inside convert(), on this thread.
-            nonisolated(unsafe) let source = buffer
-            var error: NSError?
-            converter.convert(to: out, error: &error) { _, status in
-                guard once.claim() else {
-                    status.pointee = .noDataNow
-                    return nil
-                }
-                status.pointee = .haveData
-                return source
-            }
-            if error == nil, out.frameLength > 0 { continuation.yield(AnalyzerInput(buffer: out)) }
         }
+    }
+
+    /// Caller holds the lock.
+    private func convertAndYield(_ buffer: AVAudioPCMBuffer) {
+        guard let continuation, let target else { return }
+        if buffer.format == target {
+            continuation.yield(AnalyzerInput(buffer: buffer))
+            return
+        }
+        if converter?.inputFormat != buffer.format {
+            converter = AVAudioConverter(from: buffer.format, to: target) // also after an audio route change
+        }
+        guard let converter else { return }
+        let ratio = target.sampleRate / buffer.format.sampleRate
+        let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 16
+        guard let out = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: capacity) else { return }
+        let once = OnceFlag() // hand the converter this one buffer, then report "no more for now"
+        // The input block runs synchronously inside convert(), on this thread.
+        nonisolated(unsafe) let source = buffer
+        var error: NSError?
+        converter.convert(to: out, error: &error) { _, status in
+            guard once.claim() else {
+                status.pointee = .noDataNow
+                return nil
+            }
+            status.pointee = .haveData
+            return source
+        }
+        if error == nil, out.frameLength > 0 { continuation.yield(AnalyzerInput(buffer: out)) }
+    }
+
+    static func copy(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+        guard let src = buffer.floatChannelData,
+              let copy = AVAudioPCMBuffer(pcmFormat: buffer.format, frameCapacity: buffer.frameLength),
+              let dst = copy.floatChannelData else { return nil }
+        copy.frameLength = buffer.frameLength
+        let channels = buffer.format.isInterleaved ? 1 : Int(buffer.format.channelCount)
+        let samples = Int(buffer.frameLength) * (buffer.format.isInterleaved ? Int(buffer.format.channelCount) : 1)
+        for c in 0..<channels { dst[c].update(from: src[c], count: samples) }
+        return copy
     }
 
     static func installTap(on node: AVAudioInputNode, format: AVAudioFormat, sink: AnalyzerAudioSink) {
@@ -152,13 +328,8 @@ final class AnalyzerAudioSink: @unchecked Sendable {
     let isOnDevice = true
 
     private var audio = AVAudioEngine()
-    private var analyzer: SpeechAnalyzer?
-    private var input: AsyncStream<AnalyzerInput>.Continuation?
-    private var targetFormat: AVAudioFormat?
-    private var resultsTask: Task<Void, Never>?
+    private var session: AnalyzerSession?
     private var configObserver: NSObjectProtocol?
-    private var transcript = AnalyzerModule.Transcript()
-    private var lastError: String?
     private var generation = 0
 
     init(engine: RecognitionEngine) {
@@ -169,104 +340,48 @@ final class AnalyzerAudioSink: @unchecked Sendable {
         cancel()
         generation += 1
         let gen = generation
-        transcript = .init()
-        lastError = nil
-
-        guard let locale = await AnalyzerModule.supportedLocale(engineKind, for: language) else {
-            throw CaptureError.unsupportedLanguage(language.rawValue)
-        }
-        let module = AnalyzerModule.make(engineKind, locale: locale)
-        if let request = try await AssetInventory.assetInstallationRequest(supporting: [module.module]) {
-            // First use of this language: download in the background; the caller falls back for now.
-            Task.detached { try? await request.downloadAndInstall() }
-            throw CaptureError.modelDownloading(language.rawValue)
-        }
-        guard let target = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [module.module]) else {
-            throw CaptureError.engine("no compatible audio format")
-        }
-        let analyzer = SpeechAnalyzer(modules: [module.module])
-        let context = AnalysisContext()
-        context.contextualStrings[.general] = vocabulary
-        try? await analyzer.setContext(context)
-        guard gen == generation else { return } // cancelled while setting up
-
-        let (stream, continuation) = AsyncStream<AnalyzerInput>.makeStream()
-        self.analyzer = analyzer
-        self.input = continuation
-        self.targetFormat = target
-        resultsTask = Task { [weak self] in
-            do {
-                for try await (text, isFinal) in module.results {
-                    guard let self, gen == self.generation else { return }
-                    self.transcript.apply(text, isFinal: isFinal)
-                    self.onPartial?(self.transcript.text)
-                }
-            } catch is CancellationError {
-            } catch {
-                guard let self, gen == self.generation else { return }
-                Log.asr.notice("analyzer results ended with error: \(error.localizedDescription, privacy: .public)")
-                self.lastError = "Recognition failed: \(error.localizedDescription)"
-            }
-        }
+        // Mic first: whatever is said while the analyzer sets up is buffered, not lost.
+        sink.beginCapture()
+        try startAudio()
         do {
-            try startAudio()
-            try await analyzer.start(inputSequence: stream)
+            let session = try await AnalyzerSession.prepare(engine: engineKind, language: language, vocabulary: vocabulary)
+            guard gen == generation else {
+                session.cancel()
+                return
+            }
+            session.onUpdate = { [weak self] text in self?.onPartial?(text) }
+            self.session = session
+            sink.attach(target: session.format, continuation: session.input)
         } catch {
-            cancel()
+            stopAudio()
+            sink.detach()
             throw error
         }
-        Log.asr.info("analyzer started engine=\(self.engineKind.rawValue, privacy: .public) locale=\(locale.identifier, privacy: .public)")
     }
 
     func finish() async -> (text: String, error: String?) {
         let gen = generation
         try? await Task.sleep(for: .milliseconds(250)) // don't clip the last syllable
-        guard gen == generation else { return ("", nil) }
+        guard gen == generation, let session else { return ("", nil) }
         stopAudio()
-        input?.finish()
-        input = nil
-        if let analyzer {
-            // Bound the wait: if finalization stalls, cancel, which ends the results stream.
-            let watchdog = Task {
-                try await Task.sleep(for: .milliseconds(1500))
-                Log.asr.notice("analyzer finalization timed out; using results so far")
-                await analyzer.cancelAndFinishNow()
-            }
-            do {
-                try await analyzer.finalizeAndFinishThroughEndOfInput()
-            } catch {
-                Log.asr.notice("analyzer finalize failed: \(error.localizedDescription, privacy: .public)")
-            }
-            await resultsTask?.value
-            watchdog.cancel()
-        }
-        let text = transcript.text
-        cleanup()
-        return (text, text.isEmpty ? lastError : nil)
+        sink.detach()
+        let text = await session.finish()
+        self.session = nil
+        return (text, text.isEmpty ? session.error : nil)
     }
 
     func cancel() {
         generation += 1
         stopAudio()
-        input?.finish()
-        resultsTask?.cancel()
-        if let analyzer { Task { await analyzer.cancelAndFinishNow() } }
-        cleanup()
-    }
-
-    private func cleanup() {
-        input = nil
-        analyzer = nil
-        resultsTask = nil
         sink.detach()
+        session?.cancel()
+        session = nil
     }
 
     private func startAudio() throws {
-        guard let target = targetFormat else { return }
         let node = audio.inputNode
         let format = node.outputFormat(forBus: 0)
         guard format.sampleRate > 0, format.channelCount > 0 else { throw CaptureError.noInputDevice }
-        sink.configure(input: format, target: target, continuation: input)
         AnalyzerAudioSink.installTap(on: node, format: format, sink: sink)
         audio.prepare()
         do {
@@ -289,9 +404,9 @@ final class AnalyzerAudioSink: @unchecked Sendable {
         audio.inputNode.removeTap(onBus: 0)
     }
 
-    /// Input device or format changed (AirPods → HFP): re-tap with a converter for the new format.
+    /// Input device or format changed (AirPods → HFP): re-tap; the sink rebuilds its converter.
     private func rebuildAudio() {
-        guard input != nil else { return }
+        guard session != nil else { return }
         Log.audio.notice("audio configuration changed; rebuilding analyzer input")
         stopAudio()
         audio = AVAudioEngine()
@@ -299,7 +414,6 @@ final class AnalyzerAudioSink: @unchecked Sendable {
             try startAudio()
         } catch {
             Log.audio.error("rebuild failed: \(String(describing: error), privacy: .public)")
-            input?.finish()
         }
     }
 

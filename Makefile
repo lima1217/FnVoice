@@ -17,7 +17,7 @@ TEST_FLAGS := $(if $(wildcard $(CLT_DEV)/Frameworks/Testing.framework),\
   -Xswiftc -F -Xswiftc $(CLT_DEV)/Frameworks -Xlinker -F -Xlinker $(CLT_DEV)/Frameworks \
   -Xlinker -rpath -Xlinker $(CLT_DEV)/Frameworks -Xlinker -rpath -Xlinker $(CLT_DEV)/usr/lib)
 
-.PHONY: all build bundle run install clean test verify e2e eval eval-audio mock-llm
+.PHONY: all build bundle run install clean test verify e2e eval eval-audio mock-llm bench
 
 all: build
 
@@ -81,6 +81,16 @@ eval: build eval-audio
 	  --env FNVOICE_LLM_MODEL="$$FNVOICE_LLM_MODEL" \
 	  "$(APP)" --args --eval "$(CURDIR)/Eval/corpus.jsonl" --out "$(CURDIR)/$(EVAL_OUT)" $(if $(ENGINE),--engine $(ENGINE))
 	@cat Eval/eval.log; echo; echo "report: $(EVAL_OUT)"
+
+# Real-time latency benchmark of the SpeechAnalyzer path. BENCH_ARGS e.g. "--retention whileInUse --no-llm".
+BENCH_ARGS ?=
+BENCH_OUT  ?= Eval/latency.md
+bench: build eval-audio
+	@rm -f Eval/bench.log
+	open -n -W --stdout "$(CURDIR)/Eval/bench.log" --stderr "$(CURDIR)/Eval/bench.log" \
+	  "$(APP)" --args --latency-bench "$(CURDIR)/Eval/corpus.jsonl" --out "$(CURDIR)/$(BENCH_OUT)" \
+	  $(if $(ENGINE),--engine $(ENGINE)) $(BENCH_ARGS)
+	@cat "$(BENCH_OUT)"
 
 mock-llm:
 	python3 Tests/MockLLM/server.py --port 8765
