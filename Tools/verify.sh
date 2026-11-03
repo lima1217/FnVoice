@@ -28,6 +28,7 @@ check "LSUIElement = true" "[ \"\$(/usr/libexec/PlistBuddy -c 'Print :LSUIElemen
 check "NSMicrophoneUsageDescription" "/usr/libexec/PlistBuddy -c 'Print :NSMicrophoneUsageDescription' '$PLIST'"
 check "NSSpeechRecognitionUsageDescription" "/usr/libexec/PlistBuddy -c 'Print :NSSpeechRecognitionUsageDescription' '$PLIST'"
 check "LSMinimumSystemVersion = 14.0" "[ \"\$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' '$PLIST')\" = 14.0 ]"
+check "app icon bundled" "[ \"\$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' '$PLIST')\" = AppIcon ] && [ -s '$APP/Contents/Resources/AppIcon.icns' ]"
 check "executable present" "[ -x '$APP/Contents/MacOS/FnVoice' ]"
 check "arm64 slice" "lipo -archs '$APP/Contents/MacOS/FnVoice' | grep -q arm64"
 

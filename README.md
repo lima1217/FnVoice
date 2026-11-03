@@ -31,6 +31,7 @@ To start FnVoice at login, run `make install` and enable **Launch at Login** in 
 | `make e2e` | real injection into InjectProbe under ABC and your first enabled CJK input method; needs Accessibility for FnVoice.app |
 | `make eval` | ASR + refinement over `Eval/corpus.jsonl`, writes `Eval/report.md` (`ENGINE=legacy\|speechTranscriber\|dictationTranscriber`, `EVAL_OUT=…`) |
 | `make bench` | real-time latency benchmark of the SpeechAnalyzer path, writes `Eval/latency.md` |
+| `make icon` | regenerate `Resources/AppIcon.icns` from `Tools/make-icon.swift` |
 | `make mock-llm` | mock OpenAI-compatible server on `:8765` (key `test-key`) for trying Settings › Test |
 
 ## Signing (why it matters)

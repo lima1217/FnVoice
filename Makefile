@@ -17,7 +17,7 @@ TEST_FLAGS := $(if $(wildcard $(CLT_DEV)/Frameworks/Testing.framework),\
   -Xswiftc -F -Xswiftc $(CLT_DEV)/Frameworks -Xlinker -F -Xlinker $(CLT_DEV)/Frameworks \
   -Xlinker -rpath -Xlinker $(CLT_DEV)/Frameworks -Xlinker -rpath -Xlinker $(CLT_DEV)/usr/lib)
 
-.PHONY: all build bundle run install clean test verify e2e eval eval-audio mock-llm bench
+.PHONY: all build bundle run install clean test verify e2e eval eval-audio mock-llm bench icon
 
 all: build
 
@@ -29,7 +29,8 @@ build:
 bundle:
 	@BIN_DIR="$$(swift build -c $(CONFIG) --show-bin-path)"; \
 	rm -rf "$(APP)" "$(PROBE)"; \
-	mkdir -p "$(APP)/Contents/MacOS" "$(PROBE)/Contents/MacOS"; \
+	mkdir -p "$(APP)/Contents/MacOS" "$(APP)/Contents/Resources" "$(PROBE)/Contents/MacOS"; \
+	cp Resources/AppIcon.icns "$(APP)/Contents/Resources/AppIcon.icns"; \
 	cp "$$BIN_DIR/$(APP_NAME)" "$(APP)/Contents/MacOS/$(APP_NAME)"; \
 	cp Resources/Info.plist "$(APP)/Contents/Info.plist"; \
 	cp "$$BIN_DIR/InjectProbe" "$(PROBE)/Contents/MacOS/InjectProbe"; \
@@ -91,6 +92,11 @@ bench: build eval-audio
 	  "$(APP)" --args --latency-bench "$(CURDIR)/Eval/corpus.jsonl" --out "$(CURDIR)/$(BENCH_OUT)" \
 	  $(if $(ENGINE),--engine $(ENGINE)) $(BENCH_ARGS)
 	@cat "$(BENCH_OUT)"
+
+# Regenerates Resources/AppIcon.icns from Tools/make-icon.swift.
+icon:
+	swift Tools/make-icon.swift build/icon
+	iconutil -c icns build/icon/AppIcon.iconset -o Resources/AppIcon.icns
 
 mock-llm:
 	python3 Tests/MockLLM/server.py --port 8765
