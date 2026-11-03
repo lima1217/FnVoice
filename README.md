@@ -16,6 +16,8 @@ On first launch, grant what the app asks for: Microphone, Speech Recognition, an
 2. **System Settings › Keyboard › "Press 🌐 key to": Do Nothing.** FnVoice swallows the Fn event, but macOS may still show the emoji picker or switch input source. The app prompts once and keeps a menu item until it's set.
 3. Click into any text field, hold Fn, speak, release. Press **Esc** to cancel at any point before the text is typed.
 
+To start FnVoice at login, run `make install` and enable **Launch at Login** in the menu. It uses `SMAppService.mainApp`, so it shows up under System Settings › General › Login Items. If you switch it off there, the menu item shows "needs approval", and clicking it opens that settings pane.
+
 ## Make targets
 
 | target | what it does |

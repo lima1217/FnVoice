@@ -1,6 +1,7 @@
 import AppKit
 import FnVoiceCore
 import os
+import ServiceManagement
 
 /// Owns the dictation state machine and performs its effects against the real system.
 @MainActor final class AppController: NSObject, NSMenuDelegate {
@@ -326,6 +327,18 @@ import os
         vocab.target = self
         menu.addItem(vocab)
 
+        let loginItem = NSMenuItem(title: "Launch at Login", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
+        loginItem.target = self
+        switch SMAppService.mainApp.status {
+        case .enabled: loginItem.state = .on
+        case .requiresApproval:
+            // Registered, but the user switched it off in System Settings › General › Login Items.
+            loginItem.state = .mixed
+            loginItem.title = "Launch at Login (needs approval in System Settings)"
+        default: loginItem.state = .off
+        }
+        menu.addItem(loginItem)
+
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit FnVoice", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
     }
@@ -358,6 +371,25 @@ import os
             }
         }
         settingsWindow?.present()
+    }
+
+    @objc private func toggleLaunchAtLogin() {
+        let service = SMAppService.mainApp
+        do {
+            switch service.status {
+            case .enabled:
+                try service.unregister()
+            case .requiresApproval:
+                SMAppService.openSystemSettingsLoginItems()
+            default:
+                try service.register()
+                if service.status == .requiresApproval { SMAppService.openSystemSettingsLoginItems() }
+            }
+        } catch {
+            Log.app.error("launch-at-login toggle failed: \(error.localizedDescription, privacy: .public)")
+            capsule.flash("Launch at Login failed: \(error.localizedDescription)")
+        }
+        Log.app.info("launch-at-login status=\(service.status.rawValue)")
     }
 
     @objc private func editVocabulary() {
