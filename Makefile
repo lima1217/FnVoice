@@ -71,13 +71,16 @@ eval-audio:
 	Tools/make-eval-audio.sh Eval/corpus.jsonl
 
 # Runs through `open` so FnVoice.app (not the terminal) owns the speech-recognition permission.
+# ENGINE=speechTranscriber|dictationTranscriber|legacy (default: the app's current choice)
+ENGINE   ?=
+EVAL_OUT ?= Eval/report.md
 eval: build eval-audio
 	@rm -f Eval/eval.log
 	open -n -W --stdout "$(CURDIR)/Eval/eval.log" --stderr "$(CURDIR)/Eval/eval.log" \
 	  --env FNVOICE_LLM_BASE_URL="$$FNVOICE_LLM_BASE_URL" --env FNVOICE_LLM_API_KEY="$$FNVOICE_LLM_API_KEY" \
 	  --env FNVOICE_LLM_MODEL="$$FNVOICE_LLM_MODEL" \
-	  "$(APP)" --args --eval "$(CURDIR)/Eval/corpus.jsonl" --out "$(CURDIR)/Eval/report.md"
-	@cat Eval/eval.log; echo; echo "report: Eval/report.md"
+	  "$(APP)" --args --eval "$(CURDIR)/Eval/corpus.jsonl" --out "$(CURDIR)/$(EVAL_OUT)" $(if $(ENGINE),--engine $(ENGINE))
+	@cat Eval/eval.log; echo; echo "report: $(EVAL_OUT)"
 
 mock-llm:
 	python3 Tests/MockLLM/server.py --port 8765

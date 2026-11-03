@@ -104,6 +104,26 @@ extension MetricsTests {
         #expect(Vocabulary.merged(user: [], limit: 5).count == 5)
     }
 
+    @Test func recognitionEngineResolution() {
+        #expect(RecognitionEngine.resolve(stored: nil, analyzerAvailable: true) == RecognitionEngine.preferredDefault)
+        #expect(RecognitionEngine.resolve(stored: .legacy, analyzerAvailable: true) == .legacy)
+        #expect(RecognitionEngine.resolve(stored: .dictationTranscriber, analyzerAvailable: true) == .dictationTranscriber)
+        // On macOS 14/15 every SpeechAnalyzer engine falls back to legacy.
+        for e in RecognitionEngine.allCases {
+            #expect(RecognitionEngine.resolve(stored: e, analyzerAvailable: false) == .legacy)
+        }
+        #expect(RecognitionEngine.resolve(stored: nil, analyzerAvailable: false) == .legacy)
+    }
+
+    @Test func recognitionEnginePersists() {
+        let d = freshDefaults()
+        #expect(AppSettings(defaults: d).recognitionEngine == nil)
+        AppSettings(defaults: d).recognitionEngine = .dictationTranscriber
+        #expect(AppSettings(defaults: d).recognitionEngine == .dictationTranscriber)
+        AppSettings(defaults: d).recognitionEngine = nil
+        #expect(AppSettings(defaults: d).recognitionEngine == nil)
+    }
+
     @Test func fnUsageHint() {
         #expect(!FnUsageType.needsHint(rawValue: 0))
         #expect(FnUsageType.needsHint(rawValue: 1))

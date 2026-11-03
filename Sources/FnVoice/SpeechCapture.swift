@@ -7,6 +7,7 @@ enum CaptureError: Error {
     case recognizerUnavailable
     case noInputDevice
     case engine(String)
+    case modelDownloading(String)
 
     var userMessage: String {
         switch self {
@@ -14,6 +15,7 @@ enum CaptureError: Error {
         case .recognizerUnavailable: "Speech recognizer unavailable (offline?)"
         case .noInputDevice: "No microphone input"
         case .engine(let msg): "Audio error: \(msg)"
+        case .modelDownloading(let id): "Downloading the \(id) speech model…"
         }
     }
 }

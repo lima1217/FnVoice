@@ -29,7 +29,7 @@ To start FnVoice at login, run `make install` and enable **Launch at Login** in 
 | `make test` | unit + integration tests (Swift Testing; includes the mock LLM server) |
 | `make verify` | codesign strict verify, entitlements, Info.plist lint, LSUIElement, Gatekeeper (informational) |
 | `make e2e` | real injection into InjectProbe under ABC and your first enabled CJK input method; needs Accessibility for FnVoice.app |
-| `make eval` | ASR + refinement over `Eval/corpus.jsonl`, writes `Eval/report.md` |
+| `make eval` | ASR + refinement over `Eval/corpus.jsonl`, writes `Eval/report.md` (`ENGINE=legacy\|speechTranscriber\|dictationTranscriber`, `EVAL_OUT=…`) |
 | `make mock-llm` | mock OpenAI-compatible server on `:8765` (key `test-key`) for trying Settings › Test |
 
 ## Signing (why it matters)
@@ -51,7 +51,7 @@ Fn down ─▶ arming (150 ms) ─▶ recording ─▶ Fn up ─▶ finalizing �
 
 - **State machine** (`DictationMachine`) is a pure reducer. Every async result carries a session id, so a late result from a cancelled dictation can't leak into the next one. Fn presses during refining or injecting are ignored.
 - **Fn key** (`FnKeyTracker` + `HotkeyMonitor`): a CGEvent tap identifies Fn by key code 63/179 on `flagsChanged`, never by the Fn flag, since arrow and F-keys carry that flag too. Only a bare Fn press is claimed and suppressed. Fn+key combos pass through untouched. If the system disables the tap after a timeout, it is re-enabled and the tracker reset.
-- **Recognition** (`SpeechCapture`): on-device when available, punctuation on, and `contextualStrings` seeded with ~70 tech terms plus your own (menu › Edit Vocabulary…). Capture continues 250 ms after Fn-up so the last syllable isn't clipped, then waits for `isFinal` for at most 1.5 s. Server-based sessions auto-finalize at 55 s, before Apple's ~1 min cap. Audio route changes (for example AirPods switching to HFP) rebuild the engine instead of crashing. Recognition errors are shown in the capsule; they don't vanish silently.
+- **Recognition** (`AnalyzerCapture` on macOS 26 and `SpeechCapture` for legacy, behind the `LiveTranscriber` protocol). Legacy runs on-device when available, punctuation on, and `contextualStrings` seeded with ~70 tech terms plus your own (menu › Edit Vocabulary…). Capture continues 250 ms after Fn-up so the last syllable isn't clipped, then waits for `isFinal` for at most 1.5 s. Server-based sessions auto-finalize at 55 s, before Apple's ~1 min cap. Audio route changes (for example AirPods switching to HFP) rebuild the engine instead of crashing. Recognition errors are shown in the capsule; they don't vanish silently.
 - **Waveform**: RMS → dBFS, with a −50 dB noise floor and −12 dB ceiling, mapped to 0…1. Attack is 40%, release 15%, and each bar has ±4% jitter around weights [0.5, 0.8, 1.0, 0.75, 0.55]. Redrawn via display link. Reduce Motion disables jitter, spring and scale.
 - **Injection** (`TextInjector`):
   - It refuses to type while Secure Input is on, for example in a password field.
@@ -68,6 +68,26 @@ Fn down ─▶ arming (150 ms) ─▶ recording ─▶ Fn up ─▶ finalizing �
 
 Logs: `log stream --predicate 'subsystem == "com.local.fnvoice"' --info`. Transcripts are logged only at debug level and redacted. Latency from release to injection is a signpost interval (`release-to-inject`) you can view in Instruments › Points of Interest.
 
+## Recognition engines
+
+Choose one in the menu under **Recognition Engine**. The choice is remembered.
+
+| Engine | OS | Mean CER, raw | + DeepSeek refinement |
+|---|---|---|---|
+| **SpeechTranscriber** (default) | macOS 26+ | **11.9%** | **5.5%** |
+| DictationTranscriber | macOS 26+ | 18.3% | not run |
+| SFSpeechRecognizer (legacy) | macOS 14+ | 18.7% | 16.6% |
+
+Measured with `make eval` on the 40 mixed zh/en clips in `Eval/corpus.jsonl`: synthesized speech (Tingting voice), on-device, model `deepseek-flash`. The false-correction rate was 0/20 in both refinement runs. The reports are in `Eval/report-*.md`.
+
+Why SpeechTranscriber plus the LLM works so well together: legacy turns English words into Chinese sound-alikes (Python → "P3", token → "巧克力"), which an LLM can rarely recover. SpeechTranscriber writes English as near-miss Latin spellings instead (`piston`, `Qberneet`, `sleck`), and the LLM fixes those reliably. Per clip, it beats legacy on 17, loses on 9 and ties on 14.
+
+Some behavior to know about:
+- SpeechTranscriber inserts a space before Latin words (`用 Python写`) and sometimes ends with `。`.
+- Custom vocabulary (`contextualStrings`) seemed to have little effect on it in these runs.
+- On macOS 14/15 every engine falls back to legacy.
+- The first time you dictate in a language without a SpeechAnalyzer model installed, FnVoice downloads the model in the background and uses legacy until it's ready.
+
 ## Evaluation
 
 `Eval/corpus.jsonl` holds 40 mixed Chinese/English dictation cases and 20 already-correct sentences.
@@ -78,7 +98,8 @@ Logs: `log stream --predicate 'subsystem == "com.local.fnvoice"' --info`. Transc
 The LLM comes from `FNVOICE_LLM_BASE_URL`, `FNVOICE_LLM_API_KEY` and `FNVOICE_LLM_MODEL`, or else from the app's settings:
 
 ```bash
-FNVOICE_LLM_BASE_URL=https://api.openai.com/v1 FNVOICE_LLM_API_KEY=sk-... FNVOICE_LLM_MODEL=gpt-4o-mini make eval
+FNVOICE_LLM_BASE_URL=https://api.deepseek.com/v1 FNVOICE_LLM_API_KEY=sk-... FNVOICE_LLM_MODEL=deepseek-chat make eval
+FNVOICE_LLM_BASE_URL=off make eval ENGINE=legacy EVAL_OUT=Eval/report-legacy.md   # ASR only
 ```
 
 Run it through `make`: the Makefile launches the app with `open`, so FnVoice.app itself (not your terminal) holds the speech-recognition permission.

@@ -20,6 +20,36 @@ public enum DictationLanguage: String, CaseIterable, Sendable {
     }
 }
 
+/// Which speech-to-text engine drives dictation.
+public enum RecognitionEngine: String, CaseIterable, Sendable {
+    /// SpeechAnalyzer + SpeechTranscriber (macOS 26): Apple's newer on-device general model.
+    case speechTranscriber
+    /// SpeechAnalyzer + DictationTranscriber (macOS 26): same pipeline, tuned for dictation, with punctuation.
+    case dictationTranscriber
+    /// SFSpeechRecognizer: works on macOS 14+, on-device when the language model is present.
+    case legacy
+
+    /// Chosen from `make eval` results on the shipped corpus; see README › Recognition engines.
+    public static let preferredDefault: RecognitionEngine = .speechTranscriber
+
+    public var displayName: String {
+        switch self {
+        case .speechTranscriber: "SpeechTranscriber (macOS 26)"
+        case .dictationTranscriber: "DictationTranscriber (macOS 26)"
+        case .legacy: "SFSpeechRecognizer (legacy)"
+        }
+    }
+
+    public var requiresMacOS26: Bool { self != .legacy }
+
+    /// The engine to actually use: the stored choice (or the default), downgraded to legacy
+    /// when SpeechAnalyzer isn't available on this OS.
+    public static func resolve(stored: RecognitionEngine?, analyzerAvailable: Bool) -> RecognitionEngine {
+        let engine = stored ?? preferredDefault
+        return engine.requiresMacOS26 && !analyzerAvailable ? .legacy : engine
+    }
+}
+
 /// Non-secret preferences. The API key lives in the Keychain, never here.
 public final class AppSettings: @unchecked Sendable {
     enum Key {
@@ -28,6 +58,7 @@ public final class AppSettings: @unchecked Sendable {
         static let llmBaseURL = "llmBaseURL"
         static let llmModel = "llmModel"
         static let fnHintShown = "fnUsageHintShown"
+        static let engine = "recognitionEngine"
     }
 
     private let defaults: UserDefaults
@@ -54,6 +85,12 @@ public final class AppSettings: @unchecked Sendable {
     public var llmModel: String {
         get { defaults.string(forKey: Key.llmModel) ?? "" }
         set { defaults.set(newValue, forKey: Key.llmModel) }
+    }
+
+    /// nil = no explicit choice; use `RecognitionEngine.preferredDefault`.
+    public var recognitionEngine: RecognitionEngine? {
+        get { defaults.string(forKey: Key.engine).flatMap(RecognitionEngine.init(rawValue:)) }
+        set { defaults.set(newValue?.rawValue, forKey: Key.engine) }
     }
 
     public var fnHintShown: Bool {

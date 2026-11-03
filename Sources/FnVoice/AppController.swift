@@ -8,7 +8,11 @@ import ServiceManagement
     private let settings = AppSettings()
     private var machine = DictationMachine()
     private let hotkeys = HotkeyMonitor()
-    private let speech = SpeechCapture()
+    private let legacyEngine = SpeechCapture()
+    private var analyzerEngines: [RecognitionEngine: LiveTranscriber] = [:]
+    /// The engine running the current dictation.
+    private lazy var active: LiveTranscriber = legacyEngine
+    private var startTask: Task<Void, Never>?
     private let capsule = CapsulePanel()
     private lazy var injector = TextInjector(
         pasteboard: SystemPasteboard(), inputSources: TISInputSources(),
@@ -37,7 +41,7 @@ import ServiceManagement
         statusItem.menu = menu
 
         installEditMenu()
-        speech.onPartial = { [weak self] text in self?.capsule.setText(text) }
+        legacyEngine.onPartial = { [weak self] text in self?.capsule.setText(text) }
         hotkeys.isCancellable = { [weak self] in self?.machine.phase.isCancellable ?? false }
         hotkeys.onAction = { [weak self] action in self?.handleKey(action) }
         installTapOrRetry()
@@ -51,7 +55,7 @@ import ServiceManagement
             if !Permissions.isGranted(.accessibility) { await Permissions.request(.accessibility) }
             self.showFnHintIfNeeded()
         }
-        Log.app.info("started; language=\(self.settings.language.rawValue, privacy: .public)")
+        Log.app.info("started; language=\(self.settings.language.rawValue, privacy: .public) engine=\(self.resolvedEngine.rawValue, privacy: .public)")
     }
 
     // MARK: - Hotkey → state machine
@@ -96,7 +100,8 @@ import ServiceManagement
             durationLimitTask?.cancel()
             signpostState = Log.signposter.beginInterval("release-to-inject")
             Task { @MainActor in
-                let (text, error) = await self.speech.finish()
+                await self.startTask?.value // Fn released while the engine was still starting
+                let (text, error) = await self.active.finish()
                 Log.asr.debug("final transcript: \(text, privacy: .private)")
                 if let error {
                     self.send(.captureFailed(session: s, message: error))
@@ -108,7 +113,8 @@ import ServiceManagement
 
         case .abortCapture:
             durationLimitTask?.cancel()
-            speech.cancel()
+            startTask?.cancel()
+            active.cancel()
 
         case .refine(let s, let text):
             capsule.showRefining()
@@ -158,28 +164,63 @@ import ServiceManagement
         }
     }
 
+    static var analyzerAvailable: Bool {
+        if #available(macOS 26.0, *) { return true }
+        return false
+    }
+
+    private var resolvedEngine: RecognitionEngine {
+        RecognitionEngine.resolve(stored: settings.recognitionEngine, analyzerAvailable: Self.analyzerAvailable)
+    }
+
+    private func transcriber(for engine: RecognitionEngine) -> LiveTranscriber {
+        guard engine != .legacy else { return legacyEngine }
+        if let existing = analyzerEngines[engine] { return existing }
+        guard #available(macOS 26.0, *) else { return legacyEngine }
+        let created = AnalyzerCapture(engine: engine)
+        created.onPartial = { [weak self] text in self?.capsule.setText(text) }
+        analyzerEngines[engine] = created
+        return created
+    }
+
     private func startCapture(session s: Int) {
         for p in [Permission.microphone, .speechRecognition] where !Permissions.isGranted(p) {
             send(.captureFailed(session: s, message: "\(p.title) permission needed — see menu"))
             return
         }
-        do {
-            try speech.start(language: settings.language, vocabulary: currentVocabulary())
-        } catch let e as CaptureError {
-            send(.captureFailed(session: s, message: e.userMessage))
-            return
-        } catch {
-            send(.captureFailed(session: s, message: error.localizedDescription))
-            return
-        }
-        capsule.show(levels: speech.levels)
-        // Server-based recognition stops at ~1 minute; finalize just before rather than losing audio.
-        if !speech.isOnDevice {
-            durationLimitTask = Task { @MainActor in
-                try? await Task.sleep(for: .seconds(55))
-                guard !Task.isCancelled else { return }
-                Log.asr.notice("approaching server recognition limit; finalizing")
-                self.send(.fnUp)
+        let engine = transcriber(for: resolvedEngine)
+        let language = settings.language
+        let vocabulary = currentVocabulary()
+        active = engine
+        capsule.show(levels: engine.levels)
+        startTask = Task { @MainActor in
+            do {
+                do {
+                    try await engine.start(language: language, vocabulary: vocabulary)
+                } catch CaptureError.modelDownloading {
+                    // The SpeechAnalyzer model for this language is downloading; dictate with legacy meanwhile.
+                    Log.asr.notice("analyzer model not installed for \(language.rawValue, privacy: .public); using legacy for now")
+                    self.active = self.legacyEngine
+                    self.capsule.show(levels: self.legacyEngine.levels)
+                    try self.legacyEngine.start(language: language, vocabulary: vocabulary)
+                }
+            } catch let e as CaptureError {
+                self.send(.captureFailed(session: s, message: e.userMessage))
+                return
+            } catch is CancellationError {
+                return
+            } catch {
+                self.send(.captureFailed(session: s, message: error.localizedDescription))
+                return
+            }
+            // Server-based recognition stops at ~1 minute; finalize just before rather than losing audio.
+            if !self.active.isOnDevice {
+                self.durationLimitTask = Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(55))
+                    guard !Task.isCancelled else { return }
+                    Log.asr.notice("approaching server recognition limit; finalizing")
+                    self.send(.fnUp)
+                }
             }
         }
     }
@@ -310,6 +351,23 @@ import ServiceManagement
         languageItem.submenu = languageMenu
         menu.addItem(languageItem)
 
+        let engineItem = NSMenuItem(title: "Recognition Engine", action: nil, keyEquivalent: "")
+        let engineMenu = NSMenu()
+        let current = resolvedEngine
+        for engine in RecognitionEngine.allCases {
+            let item = NSMenuItem(title: engine.displayName, action: #selector(selectEngine(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = engine.rawValue
+            item.state = engine == current ? .on : .off
+            if engine.requiresMacOS26 && !Self.analyzerAvailable {
+                item.isEnabled = false
+                item.action = nil
+            }
+            engineMenu.addItem(item)
+        }
+        engineItem.submenu = engineMenu
+        menu.addItem(engineItem)
+
         let llmItem = NSMenuItem(title: "LLM Refinement", action: nil, keyEquivalent: "")
         let llmMenu = NSMenu()
         let configured = llmConfig.isConfigured
@@ -357,6 +415,12 @@ import ServiceManagement
     @objc private func selectLanguage(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String, let lang = DictationLanguage(rawValue: raw) else { return }
         settings.language = lang
+    }
+
+    @objc private func selectEngine(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let engine = RecognitionEngine(rawValue: raw) else { return }
+        settings.recognitionEngine = engine
+        Log.app.info("recognition engine → \(engine.rawValue, privacy: .public)")
     }
 
     @objc private func toggleLLM() {

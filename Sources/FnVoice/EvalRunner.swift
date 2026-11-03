@@ -10,12 +10,16 @@ import Speech
 @MainActor enum EvalRunner {
     static func run(arguments args: [String]) async -> Int32 {
         guard let corpusPath = argumentValue("--eval", in: args) else {
-            print("usage: FnVoice --eval corpus.jsonl --out report.md [--lang zh-CN]")
+            print("usage: FnVoice --eval corpus.jsonl --out report.md [--lang zh-CN] [--engine speechTranscriber|dictationTranscriber|legacy]")
             return 64
         }
         let outPath = argumentValue("--out", in: args) ?? "Eval/report.md"
         let language = argumentValue("--lang", in: args).flatMap(DictationLanguage.init(rawValue:)) ?? .simplifiedChinese
         let corpusURL = URL(fileURLWithPath: corpusPath)
+        let engine = RecognitionEngine.resolve(
+            stored: argumentValue("--engine", in: args).flatMap(RecognitionEngine.init(rawValue:)) ?? AppSettings().recognitionEngine,
+            analyzerAvailable: AppController.analyzerAvailable
+        )
 
         let cases: [EvalCase]
         do {
@@ -64,7 +68,7 @@ import Speech
                     continue
                 }
                 do {
-                    let raw = try await SpeechCapture.transcribeFile(url, language: language, vocabulary: vocabulary)
+                    let raw = try await Self.transcribe(url, language: language, vocabulary: vocabulary, engine: engine)
                     row.raw = raw
                     if let refiner {
                         let outcome = await refiner.refine(raw)
@@ -90,7 +94,7 @@ import Speech
         }
 
         let header = """
-            Generated \(ISO8601DateFormatter().string(from: Date())) · language \(language.rawValue) · \
+            Generated \(ISO8601DateFormatter().string(from: Date())) · language \(language.rawValue) · engine \(engine.displayName) · \
             speech \(speechOK ? "authorized" : "NOT authorized") · LLM \(refiner == nil ? "not configured" : "model \(config.model)")
             """
         let report = EvalReport.markdown(mixed: mixed, correct: correct, llmEnabled: refiner != nil, header: header)
@@ -102,5 +106,12 @@ import Speech
             print("cannot write report: \(error)")
             return 73
         }
+    }
+
+    private static func transcribe(_ url: URL, language: DictationLanguage, vocabulary: [String], engine: RecognitionEngine) async throws -> String {
+        if engine != .legacy, #available(macOS 26.0, *) {
+            return try await AnalyzerCapture.transcribeFile(url, language: language, vocabulary: vocabulary, engine: engine)
+        }
+        return try await SpeechCapture.transcribeFile(url, language: language, vocabulary: vocabulary)
     }
 }
