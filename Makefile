@@ -17,7 +17,7 @@ TEST_FLAGS := $(if $(wildcard $(CLT_DEV)/Frameworks/Testing.framework),\
   -Xswiftc -F -Xswiftc $(CLT_DEV)/Frameworks -Xlinker -F -Xlinker $(CLT_DEV)/Frameworks \
   -Xlinker -rpath -Xlinker $(CLT_DEV)/Frameworks -Xlinker -rpath -Xlinker $(CLT_DEV)/usr/lib)
 
-.PHONY: all build bundle run install clean test verify e2e eval eval-audio mock-llm bench icon
+.PHONY: all build bundle run install clean test verify smoke check hooks e2e eval eval-audio mock-llm bench icon
 
 all: build
 
@@ -63,6 +63,17 @@ test:
 verify:
 	@[ -d "$(APP)" ] || $(MAKE) --no-print-directory build
 	Tools/verify.sh "$(APP)"
+
+# Live recognition path on 3 clips: fails on fallbacks, empty capsule, truncated text.
+smoke: build eval-audio
+	Tools/smoke.sh "$(CURDIR)/$(APP)"
+
+# Everything that must hold before a commit; run by the pre-commit hook (`make hooks`).
+check: test build verify smoke
+
+hooks:
+	git config core.hooksPath .githooks
+	@echo "pre-commit hook enabled: runs make check"
 
 # End-to-end injection into InjectProbe (needs Accessibility granted to FnVoice.app).
 e2e: build

@@ -122,3 +122,38 @@ public enum EvalReport {
         (s ?? "-").replacingOccurrences(of: "|", with: "\\|").replacingOccurrences(of: "\n", with: " ")
     }
 }
+
+/// Pass/fail rules for `make smoke`: a few corpus clips streamed through the live recognition path.
+/// Each rule targets a bug that shipped once: recognition errors or a silent engine fallback,
+/// an empty capsule while speaking (no partials), and a truncated final text (one character).
+public enum SmokeVerdict {
+    public struct Clip: Sendable {
+        public var id: String
+        public var partials: Int
+        public var cer: Double
+        public init(id: String, partials: Int, cer: Double) {
+            self.id = id
+            self.partials = partials
+            self.cer = cer
+        }
+    }
+
+    public static let maxMeanCER = 0.5
+
+    /// Empty when the run passes; otherwise one line per broken rule.
+    public static func failures(clips: [Clip], errors: [String], expectLiveText: Bool) -> [String] {
+        var out = errors.map { "error: \($0)" }
+        if clips.isEmpty { out.append("no clip was transcribed") }
+        if expectLiveText {
+            let silent = clips.filter { $0.partials == 0 }.map(\.id)
+            if !silent.isEmpty { out.append("no live text while speaking on \(silent.joined(separator: ", "))") }
+        }
+        if !clips.isEmpty {
+            let mean = clips.map(\.cer).reduce(0, +) / Double(clips.count)
+            if mean > maxMeanCER {
+                out.append(String(format: "mean CER %.0f%% > %.0f%% (truncated or garbled final text)", mean * 100, maxMeanCER * 100))
+            }
+        }
+        return out
+    }
+}

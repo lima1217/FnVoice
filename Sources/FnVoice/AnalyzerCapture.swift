@@ -8,6 +8,8 @@ import Speech
     var levels: LevelBox { get }
     var onPartial: ((String) -> Void)? { get set }
     var isOnDevice: Bool { get }
+    /// Text updates received while Fn was held; 0 means the capsule showed no live text.
+    var partialsDuringCapture: Int { get }
     func start(language: DictationLanguage, vocabulary: [String]) async throws
     /// Stops capture after a short tail and returns the final text, or the error that explains an empty result.
     func finish() async -> (text: String, error: String?)
@@ -337,6 +339,8 @@ final class AnalyzerAudioSink: @unchecked Sendable {
     var levels: LevelBox { sink.levels }
     var onPartial: ((String) -> Void)?
     let isOnDevice = true
+    private(set) var partialsDuringCapture = 0
+    private var capturing = false
 
     private var audio = AVAudioEngine()
     private var session: AnalyzerSession?
@@ -355,6 +359,8 @@ final class AnalyzerAudioSink: @unchecked Sendable {
         cancel()
         generation += 1
         let gen = generation
+        partialsDuringCapture = 0
+        capturing = true
         // Mic first: whatever is said while the analyzer sets up is buffered, not lost.
         sink.beginCapture()
         try startAudio()
@@ -364,7 +370,11 @@ final class AnalyzerAudioSink: @unchecked Sendable {
                 session.cancel()
                 return
             }
-            session.onUpdate = { [weak self] text in self?.onPartial?(text) }
+            session.onUpdate = { [weak self] text in
+                guard let self else { return }
+                if self.capturing { self.partialsDuringCapture += 1 }
+                self.onPartial?(text)
+            }
             self.session = session
             sink.attach(target: session.format, continuation: session.input)
         } catch {
@@ -378,6 +388,7 @@ final class AnalyzerAudioSink: @unchecked Sendable {
         let gen = generation
         try? await Task.sleep(for: .milliseconds(250)) // don't clip the last syllable
         guard gen == generation, let session else { return ("", nil) }
+        capturing = false
         stopAudio()
         sink.detach()
         let text = await session.finish()

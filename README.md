@@ -27,6 +27,8 @@ To start FnVoice at login, run `make install` and enable **Launch at Login** in 
 | `make install` | copy to `/Applications` (`INSTALL_DIR=…` to change) |
 | `make clean` | remove all build products |
 | `make test` | unit + integration tests (Swift Testing; includes the mock LLM server) |
+| `make check` | the pre-commit guardrail: test + build + verify + smoke (`make hooks` enables the hook once per clone) |
+| `make smoke` | 3 clips through the live recognition path, live text on and off; fails on fallbacks, an empty capsule, or truncated text |
 | `make verify` | codesign strict verify, entitlements, Info.plist lint, LSUIElement, Gatekeeper (informational) |
 | `make e2e` | real injection into InjectProbe under ABC and your first enabled CJK input method; needs Accessibility for FnVoice.app |
 | `make eval` | ASR + refinement over `Eval/corpus.jsonl`, writes `Eval/report.md` (`ENGINE=legacy\|speechTranscriber\|dictationTranscriber`, `EVAL_OUT=…`) |
@@ -72,7 +74,7 @@ Fn down ─▶ arming (150 ms) ─▶ recording ─▶ Fn up ─▶ finalizing �
   - Any error, timeout, cancellation or guardrail rejection injects the raw transcript. Your words are never lost.
   - The API key is stored in the Keychain; clearing the field and saving deletes it.
 
-Logs: `log stream --predicate 'subsystem == "com.local.fnvoice"' --info`. Transcripts are logged only at debug level and redacted. Every dictation logs one line such as `latency engine=speechTranscriber setup=0ms asr=360ms llm=1100ms paste=40ms release→text=1500ms`, and `release-to-inject` is also a signpost interval in Instruments › Points of Interest.
+Logs: `log stream --predicate 'subsystem == "com.local.fnvoice"' --info`. Transcripts are logged only at debug level and redacted. Every dictation logs one line such as `latency engine=speechTranscriber partials=12 setup=0ms asr=360ms llm=1100ms paste=40ms release→text=1500ms`, and `release-to-inject` is also a signpost interval in Instruments › Points of Interest.
 
 ## Latency
 

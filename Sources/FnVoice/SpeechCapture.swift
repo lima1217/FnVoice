@@ -67,6 +67,8 @@ final class AudioSink: @unchecked Sendable {
     private var finished = false
     private var finalWaiter: CheckedContinuation<String, Never>?
     private(set) var isOnDevice = false
+    private(set) var partialsDuringCapture = 0
+    private var capturing = false
 
     func start(language: DictationLanguage, vocabulary: [String]) throws {
         cancel()
@@ -75,6 +77,8 @@ final class AudioSink: @unchecked Sendable {
         latestText = ""
         lastError = nil
         finished = false
+        partialsDuringCapture = 0
+        capturing = true
 
         guard let recognizer = SFSpeechRecognizer(locale: Locale(identifier: language.rawValue)) else {
             throw CaptureError.unsupportedLanguage(language.rawValue)
@@ -108,6 +112,7 @@ final class AudioSink: @unchecked Sendable {
     /// final result (bounded by `finalTimeout`, falling back to the latest partial).
     func finish(trailing: Duration = .milliseconds(250), finalTimeout: Duration = .milliseconds(1500)) async -> (text: String, error: String?) {
         let gen = generation
+        capturing = false
         try? await Task.sleep(for: trailing)
         guard gen == generation else { return ("", nil) }
         stopEngine()
@@ -149,6 +154,7 @@ final class AudioSink: @unchecked Sendable {
     private func handle(gen: Int, text: String?, isFinal: Bool, error: RecognitionFailure?) {
         guard gen == generation else { return }
         if let text, !text.isEmpty {
+            if capturing { partialsDuringCapture += 1 }
             latestText = text
             onPartial?(text)
         }

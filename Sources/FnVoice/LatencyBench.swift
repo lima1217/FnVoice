@@ -66,6 +66,7 @@ import Speech
         }
 
         var rows: [Row] = []
+        var errors: [String] = []
         for c in cases {
             let url = corpusURL.deletingLastPathComponent().appendingPathComponent(c.audio!)
             do {
@@ -97,15 +98,23 @@ import Speech
                 print("[\(c.id)] setup=\(Int(setup))ms partials-during-audio=\(updatesDuringAudio) first-partial=\(firstUpdate.map { "\(Int($0))ms" } ?? "-") finalize=\(Int(finalize))ms cer=\(String(format: "%.1f%%", ErrorRate.cer(reference: c.reference, hypothesis: text) * 100)) llm=\(llm.map { "\(Int($0))ms" } ?? "-")")
             } catch {
                 print("[\(c.id)] error: \(error)")
+                errors.append("\(c.id): \(error)")
             }
         }
 
-        let report = markdown(rows: rows, engine: engine, fast: fast, retention: retentionName, prewarmMs: prewarmMs, llm: refiner != nil)
+        var report = markdown(rows: rows, engine: engine, fast: fast, retention: retentionName, prewarmMs: prewarmMs, llm: refiner != nil)
+        var failed = false
+        if args.contains("--assert") {
+            let clips = rows.map { SmokeVerdict.Clip(id: $0.id, partials: $0.partials, cer: $0.cer) }
+            let failures = SmokeVerdict.failures(clips: clips, errors: errors, expectLiveText: fast)
+            failed = !failures.isEmpty
+            report += failed ? "\nSMOKE: FAIL\n" + failures.map { "- \($0)" }.joined(separator: "\n") + "\n" : "\nSMOKE: PASS\n"
+        }
         print(report)
         if let out = argumentValue("--out", in: args) {
             try? report.write(toFile: out, atomically: true, encoding: .utf8)
         }
-        return rows.isEmpty ? 1 : 0
+        return rows.isEmpty || failed ? 1 : 0
     }
 
     /// Reads the file in 100 ms chunks, converts to the analyzer format, and yields each chunk

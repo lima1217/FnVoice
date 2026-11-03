@@ -1,0 +1,4 @@
+#!/bin/sh
+# Runs the full guardrail before every commit: tests, release build, bundle verification, and the
+# live-path smoke test. Enable once per clone with `make hooks`.
+exec make check

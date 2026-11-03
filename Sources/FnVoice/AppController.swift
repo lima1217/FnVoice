@@ -160,7 +160,10 @@ import ServiceManagement
                 } catch {
                     notice = error.localizedDescription
                 }
-                self.timing.log(engine: self.active is SpeechCapture ? "legacy" : self.resolvedEngine.rawValue)
+                self.timing.log(
+                    engine: self.active is SpeechCapture ? "legacy" : self.resolvedEngine.rawValue,
+                    partials: self.active.partialsDuringCapture
+                )
                 if let state = self.signpostState {
                     Log.signposter.endInterval("release-to-inject", state)
                     self.signpostState = nil
@@ -505,7 +508,7 @@ import ServiceManagement
 }
 
 /// Timestamps of one dictation. Logged as one line, e.g.
-/// `latency engine=speechTranscriber setup=120ms asr=310ms llm=640ms paste=95ms release→text=1045ms`.
+/// `latency engine=speechTranscriber partials=12 setup=120ms asr=310ms llm=640ms paste=95ms release→text=1045ms`.
 struct LatencyTiming {
     var press: ContinuousClock.Instant?
     var ready: ContinuousClock.Instant?
@@ -520,9 +523,9 @@ struct LatencyTiming {
         return "\(Int((b - a) / .milliseconds(1)))ms"
     }
 
-    func log(engine: String) {
+    func log(engine: String, partials: Int) {
         let pasteFrom = refineDone ?? asrDone
-        let line = "engine=\(engine) setup=\(Self.ms(press, ready)) asr=\(Self.ms(release, asrDone)) "
+        let line = "engine=\(engine) partials=\(partials) setup=\(Self.ms(press, ready)) asr=\(Self.ms(release, asrDone)) "
             + "llm=\(Self.ms(refineStart, refineDone)) paste=\(Self.ms(pasteFrom, pasted)) release→text=\(Self.ms(release, pasted))"
         Log.app.info("latency \(line, privacy: .public)")
     }
