@@ -18,6 +18,12 @@ On first launch, grant what the app asks for: Microphone, Speech Recognition, an
 
 To start FnVoice at login, run `make install` and enable **Launch at Login** in the menu. It uses `SMAppService.mainApp`, so it shows up under System Settings › General › Login Items. If you switch it off there, the menu item shows "needs approval", and clicking it opens that settings pane.
 
+## Privacy
+
+- **Speech is recognized on your Mac.** Audio never leaves the machine and is never saved to disk. On macOS 26 the SpeechAnalyzer engines are always on-device. The legacy engine (macOS 14/15) uses on-device recognition whenever Apple provides a model for the language; otherwise Apple's recognizer falls back to its server.
+- **Only the transcribed text goes to the LLM you configure**, and only when **LLM Refinement** is enabled in the menu. Text with no English letters and no known sound-alike (such as 配森) is never sent. Nothing else goes out: no audio, clipboard contents, or app names. FnVoice sends no telemetry.
+- The API key is stored in the macOS Keychain. Transcripts appear in logs only at debug level and are redacted.
+
 ## Make targets
 
 | target | what it does |
