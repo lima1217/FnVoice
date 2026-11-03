@@ -1,0 +1,106 @@
+import Foundation
+import FnVoiceCore
+import Speech
+
+/// `FnVoice --eval <corpus.jsonl> --out <report.md> [--lang zh-CN]`
+///
+/// Runs the real recognizer (same settings as live dictation) on each corpus audio file, then the
+/// real refinement pipeline, and writes a CER / false-correction report. LLM config comes from
+/// FNVOICE_LLM_BASE_URL / FNVOICE_LLM_API_KEY / FNVOICE_LLM_MODEL, else from the app's settings.
+@MainActor enum EvalRunner {
+    static func run(arguments args: [String]) async -> Int32 {
+        guard let corpusPath = argumentValue("--eval", in: args) else {
+            print("usage: FnVoice --eval corpus.jsonl --out report.md [--lang zh-CN]")
+            return 64
+        }
+        let outPath = argumentValue("--out", in: args) ?? "Eval/report.md"
+        let language = argumentValue("--lang", in: args).flatMap(DictationLanguage.init(rawValue:)) ?? .simplifiedChinese
+        let corpusURL = URL(fileURLWithPath: corpusPath)
+
+        let cases: [EvalCase]
+        do {
+            cases = try EvalCase.loadJSONL(String(contentsOf: corpusURL, encoding: .utf8))
+        } catch {
+            print("cannot read corpus: \(error)")
+            return 66
+        }
+
+        // `make eval` always forwards these, as empty strings when unset; empty means "use app settings".
+        let env = ProcessInfo.processInfo.environment.filter { !$0.value.isEmpty }
+        let settings = AppSettings()
+        let config = LLMConfig(
+            baseURL: env["FNVOICE_LLM_BASE_URL"] ?? settings.llmBaseURL,
+            apiKey: env["FNVOICE_LLM_API_KEY"] ?? Keychain.readAPIKey(),
+            model: env["FNVOICE_LLM_MODEL"] ?? settings.llmModel
+        )
+        let refiner = config.isConfigured ? Refiner(client: OpenAICompatibleClient(config: config, timeout: .seconds(15))) : nil
+
+        var speechOK = SFSpeechRecognizer.authorizationStatus() == .authorized
+        if !speechOK && SFSpeechRecognizer.authorizationStatus() == .notDetermined {
+            speechOK = await Permissions.requestSpeech() == .authorized
+        }
+        let vocabulary = Vocabulary.merged(user: [])
+
+        var mixed: [EvalRow] = []
+        var correct: [EvalRow] = []
+        for c in cases {
+            switch c.kind {
+            case .mixed:
+                var row = EvalRow(id: c.id, reference: c.reference, raw: nil, refined: nil)
+                guard speechOK else {
+                    row.note = "speech recognition not authorized"
+                    mixed.append(row)
+                    continue
+                }
+                guard let audio = c.audio else {
+                    row.note = "no audio"
+                    mixed.append(row)
+                    continue
+                }
+                let url = corpusURL.deletingLastPathComponent().appendingPathComponent(audio)
+                guard FileManager.default.fileExists(atPath: url.path) else {
+                    row.note = "missing \(audio) (run make eval-audio)"
+                    mixed.append(row)
+                    continue
+                }
+                do {
+                    let raw = try await SpeechCapture.transcribeFile(url, language: language, vocabulary: vocabulary)
+                    row.raw = raw
+                    if let refiner {
+                        let outcome = await refiner.refine(raw)
+                        row.refined = outcome.text
+                        row.note = outcome.fallbackReason
+                    }
+                } catch {
+                    row.note = "ASR error: \(error.localizedDescription)"
+                }
+                print("[\(c.id)] \(row.raw ?? "-") → \(row.refined ?? "-")")
+                mixed.append(row)
+
+            case .correct:
+                var row = EvalRow(id: c.id, reference: c.reference, raw: c.reference, refined: nil)
+                if let refiner {
+                    let outcome = await refiner.refine(c.reference)
+                    row.refined = outcome.text
+                    row.note = outcome.fallbackReason
+                    print("[\(c.id)] \(outcome.text == c.reference ? "unchanged" : "CHANGED → \(outcome.text)")")
+                }
+                correct.append(row)
+            }
+        }
+
+        let header = """
+            Generated \(ISO8601DateFormatter().string(from: Date())) · language \(language.rawValue) · \
+            speech \(speechOK ? "authorized" : "NOT authorized") · LLM \(refiner == nil ? "not configured" : "model \(config.model)")
+            """
+        let report = EvalReport.markdown(mixed: mixed, correct: correct, llmEnabled: refiner != nil, header: header)
+        do {
+            try report.write(toFile: outPath, atomically: true, encoding: .utf8)
+            print("report written to \(outPath)")
+            return 0
+        } catch {
+            print("cannot write report: \(error)")
+            return 73
+        }
+    }
+}

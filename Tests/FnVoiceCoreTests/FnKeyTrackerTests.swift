@@ -1,0 +1,77 @@
+import Testing
+@testable import FnVoiceCore
+
+@Suite struct FnKeyTrackerTests {
+    let fnDown = KeyEventInput(kind: .flagsChanged, keyCode: 63, fnFlag: true)
+    let fnUp = KeyEventInput(kind: .flagsChanged, keyCode: 63, fnFlag: false)
+
+    @Test func bareFnIsClaimedAndSuppressed() {
+        var t = FnKeyTracker()
+        #expect(t.handle(fnDown, dictationCancellable: false) == (.suppress, .fnDown))
+        #expect(t.handle(fnUp, dictationCancellable: true) == (.suppress, .fnUp))
+        #expect(!t.fnHeld)
+    }
+
+    @Test func fnWithOtherModifierPassesThrough() {
+        var t = FnKeyTracker()
+        let cmdFn = KeyEventInput(kind: .flagsChanged, keyCode: 63, fnFlag: true, otherModifiers: true)
+        #expect(t.handle(cmdFn, dictationCancellable: false) == (.passThrough, nil))
+        #expect(t.handle(fnUp, dictationCancellable: false) == (.passThrough, nil))
+    }
+
+    @Test func keyWhileFnHeldIsPassedThroughAsCombo() {
+        var t = FnKeyTracker()
+        _ = t.handle(fnDown, dictationCancellable: false)
+        let upArrow = KeyEventInput(kind: .keyDown, keyCode: 126, fnFlag: true)
+        #expect(t.handle(upArrow, dictationCancellable: false) == (.passThrough, .comboKey))
+        let f5 = KeyEventInput(kind: .keyDown, keyCode: 96, fnFlag: true)
+        #expect(t.handle(f5, dictationCancellable: false) == (.passThrough, .comboKey))
+    }
+
+    @Test func arrowKeysCarryFnFlagButAreNotFn() {
+        var t = FnKeyTracker()
+        let arrow = KeyEventInput(kind: .keyDown, keyCode: 123, fnFlag: true)
+        #expect(t.handle(arrow, dictationCancellable: false) == (.passThrough, nil))
+        #expect(!t.fnHeld)
+    }
+
+    @Test func modifierAddedWhileFnHeldIsCombo() {
+        var t = FnKeyTracker()
+        _ = t.handle(fnDown, dictationCancellable: false)
+        let shift = KeyEventInput(kind: .flagsChanged, keyCode: 56, fnFlag: true, otherModifiers: true)
+        #expect(t.handle(shift, dictationCancellable: false) == (.passThrough, .comboKey))
+    }
+
+    @Test func escapeSuppressedOnlyWhenCancellable() {
+        var t = FnKeyTracker()
+        let escDown = KeyEventInput(kind: .keyDown, keyCode: 53, fnFlag: false)
+        let escUp = KeyEventInput(kind: .keyUp, keyCode: 53, fnFlag: false)
+        #expect(t.handle(escDown, dictationCancellable: false) == (.passThrough, nil))
+        #expect(t.handle(escUp, dictationCancellable: false) == (.passThrough, nil))
+        #expect(t.handle(escDown, dictationCancellable: true) == (.suppress, .escape))
+        // The matching key-up is swallowed even if dictation already ended.
+        #expect(t.handle(escUp, dictationCancellable: false) == (.suppress, nil))
+    }
+
+    @Test func globeKeyCodeIsTreatedAsFn() {
+        var t = FnKeyTracker()
+        let globe = KeyEventInput(kind: .flagsChanged, keyCode: 179, fnFlag: true)
+        #expect(t.handle(globe, dictationCancellable: false) == (.suppress, .fnDown))
+        let globeKey = KeyEventInput(kind: .keyDown, keyCode: 179, fnFlag: true)
+        #expect(t.handle(globeKey, dictationCancellable: false) == (.suppress, nil))
+    }
+
+    @Test func ordinaryTypingIsUntouched() {
+        var t = FnKeyTracker()
+        let a = KeyEventInput(kind: .keyDown, keyCode: 0, fnFlag: false)
+        #expect(t.handle(a, dictationCancellable: true) == (.passThrough, nil))
+    }
+
+    @Test func resetForgetsHeldFn() {
+        var t = FnKeyTracker()
+        _ = t.handle(fnDown, dictationCancellable: false)
+        t.reset()
+        #expect(!t.fnHeld)
+        #expect(t.handle(fnDown, dictationCancellable: false) == (.suppress, .fnDown))
+    }
+}
