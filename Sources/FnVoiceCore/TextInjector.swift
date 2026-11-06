@@ -122,6 +122,9 @@ public typealias Sleeper = @Sendable (Duration) async -> Void
 
         poster.postPaste()
         onPasted()
+        // The clipboard delay counts from the paste, so it runs alongside the input-source
+        // restore instead of after it; the caller gets its report that much sooner.
+        async let clipboardSettled: Void = sleep(timing.clipboardRestoreDelay)
         await sleep(timing.afterPaste)
 
         var restoredSource = true
@@ -130,7 +133,7 @@ public typealias Sleeper = @Sendable (Duration) async -> Void
             restoredSource = await waitUntil { self.inputSources.current()?.id == original.id }
         }
 
-        await sleep(timing.clipboardRestoreDelay)
+        await clipboardSettled
         // If the changeCount moved, the user (or another app) copied something new meanwhile: keep it.
         var restoredClipboard = false
         if pasteboard.changeCount == ourChangeCount {

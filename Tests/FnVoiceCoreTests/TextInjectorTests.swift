@@ -184,6 +184,23 @@ let pinyin = InputSourceInfo(id: "com.apple.inputmethod.SCIM.ITABC", isKeyboardL
         _ = try await rig.injector.inject("x", expectedPID: 100)
         #expect(rig.pasteboard.items.isEmpty)
     }
+
+    /// The clipboard-restore delay counts from the paste and overlaps the post-paste wait, so a
+    /// paste costs max(afterPaste, clipboardRestoreDelay), not their sum.
+    @Test func clipboardDelayOverlapsThePostPasteWait() async throws {
+        let rig = Rig(current: abc.id)
+        var timing = InjectionTiming()
+        timing.afterPaste = .milliseconds(200)
+        timing.clipboardRestoreDelay = .milliseconds(200)
+        let injector = TextInjector(
+            pasteboard: rig.pasteboard, inputSources: rig.inputs, poster: rig.poster, system: rig.probe, timing: timing
+        )
+        let start = ContinuousClock.now
+        _ = try await injector.inject("x", expectedPID: 100)
+        let elapsed = ContinuousClock.now - start
+        #expect(elapsed < .milliseconds(350), "took \(elapsed); the two waits ran one after the other")
+        #expect(rig.journal.entries == ["writeTransient", "paste", "restoreClipboard"])
+    }
 }
 
 @Suite struct InputSourcePolicyTests {

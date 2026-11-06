@@ -145,14 +145,17 @@ struct AnalyzerModule {
             throw CaptureError.unsupportedLanguage(language.rawValue)
         }
         let m = module(locale)
+        // Independent queries about the same module: ask both at once.
         // assetInstallationRequest returns a request even for installed models, so ask for status instead.
-        if await AssetInventory.status(forModules: [m.module]) != .installed {
+        async let status = AssetInventory.status(forModules: [m.module])
+        async let bestFormat = SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [m.module])
+        if await status != .installed {
             if let request = try await AssetInventory.assetInstallationRequest(supporting: [m.module]) {
                 Task.detached { try? await request.downloadAndInstall() }
             }
             throw CaptureError.modelDownloading(language.rawValue)
         }
-        guard let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [m.module]) else {
+        guard let format = await bestFormat else {
             throw CaptureError.engine("no compatible audio format")
         }
         let setup = Setup(locale: locale, format: format)

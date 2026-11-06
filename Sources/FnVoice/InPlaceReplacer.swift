@@ -15,7 +15,10 @@ import FnVoiceCore
         case failed(String)
     }
 
-    static func replace(_ typed: String, with text: String, pid: Int32, injector: TextInjector) async -> Outcome {
+    /// `onPasted` runs the moment the answer appears in the field, before the injector's housekeeping.
+    static func replace(
+        _ typed: String, with text: String, pid: Int32, injector: TextInjector, onPasted: () -> Void = {}
+    ) async -> Outcome {
         guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { return .skipped("app changed") }
         guard let element = EditWatcher.focusedElement(pid: pid), let value = EditWatcher.value(of: element) else {
             return .skipped("field not readable")
@@ -36,7 +39,7 @@ import FnVoiceCore
             return .skipped("selection not accepted")
         }
         do {
-            _ = try await injector.inject(text, expectedPID: pid)
+            _ = try await injector.inject(text, expectedPID: pid, onPasted: onPasted)
             return .replaced
         } catch {
             // The raw text is still selected; a keystroke now would delete it. Deselect first.

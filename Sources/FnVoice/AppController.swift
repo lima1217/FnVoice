@@ -229,10 +229,11 @@ import ServiceManagement
                 let text = TextFormatter.format(refined)
                 if let (session, entry) = self.record, session == s, let typed = entry.pasted, text != typed,
                    let pid = self.targetPID {
-                    let outcome = await InPlaceReplacer.replace(typed, with: text, pid: pid, injector: self.injector)
+                    let outcome = await InPlaceReplacer.replace(typed, with: text, pid: pid, injector: self.injector) {
+                        self.timing.replaced = .now
+                    }
                     switch outcome {
                     case .replaced:
-                        self.timing.replaced = .now
                         self.record?.value.replaced = text
                         Log.inject.info("replaced in place")
                     case .skipped(let why):
