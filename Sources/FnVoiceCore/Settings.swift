@@ -60,6 +60,7 @@ public final class AppSettings: @unchecked Sendable {
         static let fnHintShown = "fnUsageHintShown"
         static let engine = "recognitionEngine"
         static let liveText = "showLiveText"
+        static let learnCorrections = "learnFromCorrections"
     }
 
     private let defaults: UserDefaults
@@ -99,6 +100,12 @@ public final class AppSettings: @unchecked Sendable {
     public var showLiveText: Bool {
         get { defaults.object(forKey: Key.liveText) as? Bool ?? true }
         set { defaults.set(newValue, forKey: Key.liveText) }
+    }
+
+    /// Watch the field after pasting and learn from words the user fixes by hand. Default on.
+    public var learnFromCorrections: Bool {
+        get { defaults.object(forKey: Key.learnCorrections) as? Bool ?? true }
+        set { defaults.set(newValue, forKey: Key.learnCorrections) }
     }
 
     public var fnHintShown: Bool {

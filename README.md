@@ -22,6 +22,7 @@ To start FnVoice at login, run `make install` and enable **Launch at Login** in 
 
 - **Speech is recognized on your Mac.** Audio never leaves the machine and is never saved to disk. On macOS 26 the SpeechAnalyzer engines are always on-device. The legacy engine (macOS 14/15) uses on-device recognition whenever Apple provides a model for the language; otherwise Apple's recognizer falls back to its server.
 - **Only the transcribed text goes to the LLM you configure**, and only when **LLM Refinement** is enabled in the menu. Text with no English letters and no known sound-alike (such as 配森) is never sent. Nothing else goes out: no audio, clipboard contents, or app names. FnVoice sends no telemetry.
+- **Learning from edits** reads the field you dictated into, only right after a dictation, and keeps its contents in memory only. Just the corrected word pairs are written to disk, in `corrections.txt`. Turn it off in menu › Learned Corrections › Learn From My Edits.
 - The API key is stored in the macOS Keychain. Transcripts appear in logs only at debug level and are redacted.
 
 ## Make targets
@@ -70,6 +71,10 @@ Fn down ─▶ arming (150 ms) ─▶ recording ─▶ Fn up ─▶ finalizing �
   - For CJK input methods it switches to ABC/US, waits until the switch has actually taken effect, sends ⌘V using the "v" key in the current layout, then switches back and verifies.
   - The clipboard is restored 300 ms later, but only if nothing else was copied in the meantime.
 - **Spacing** (`TextFormatter`): every injected text gets one space on both sides of an English word next to Chinese or Japanese (`用 Python 写`). Numbers stay attached (`5分钟`), there is no space next to full-width punctuation, and English and Korean spacing is left alone. Only whitespace changes, never characters.
+- **Learning from your edits** (`EditWatcher`, `CorrectionExtractor`, `CorrectionStore`; menu › Learned Corrections):
+  - After pasting, FnVoice reads the focused field over Accessibility every 0.4 s. It stops when the field loses focus, you switch apps, the pasted text disappears (for example, a chat box cleared by Enter), the next dictation starts, or 3 minutes pass. It skips password fields and fields over 20,000 characters.
+  - It diffs what it pasted against the last reading that stayed unchanged for one poll. Readings in the middle of an IME composition are therefore ignored. It keeps only small word substitutions: no punctuation edits, no pure insertions or deletions, and nothing from a sentence that is more than 50% rewritten. A one-character Chinese fix (带→代) is widened with its neighbour (带码→代码), so it can't rewrite every 带.
+  - Learned pairs are saved to `~/Library/Application Support/FnVoice/corrections.txt`, which you can edit. **Seen once**, the corrected word joins the recognition vocabulary and the pair is shown to the LLM, and text containing the mistake passes the refinement gate. **Seen twice**, it is replaced automatically, with no LLM needed. Latin words match whole words only. Changing an auto-replaced word back counts against the rule.
 - **LLM refinement** (`Refiner`):
   - **Gate** (`RefinementGate`): only text containing English letters (or a known sound-alike like 配森) is sent to the LLM. Pure Chinese is typed immediately, saving about 1.1 s.
   - The prompt includes your vocabulary (built-in terms plus Edit Vocabulary…) as "terms this speaker uses". SpeechTranscriber barely reacts to `contextualStrings`, but the LLM does.

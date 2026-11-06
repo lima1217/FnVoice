@@ -21,6 +21,7 @@ import ServiceManagement
     private var statusItem: NSStatusItem!
     private var settingsWindow: SettingsWindowController?
     private var apiKey = Keychain.readAPIKey()
+    private let editWatcher = EditWatcher()
 
     private var armTask: Task<Void, Never>?
     private var refineTask: Task<Void, Never>?
@@ -105,15 +106,19 @@ import ServiceManagement
             signpostState = Log.signposter.beginInterval("release-to-inject")
             Task { @MainActor in
                 await self.startTask?.value // Fn released while the engine was still starting
-                let (text, error) = await self.active.finish()
+                let (heard, error) = await self.active.finish()
                 self.timing.asrDone = .now
-                Log.asr.debug("final transcript: \(text, privacy: .private)")
+                Log.asr.debug("final transcript: \(heard, privacy: .private)")
                 if let error {
                     self.send(.captureFailed(session: s, message: error))
                     return
                 }
+                // Mistakes the user corrected twice are fixed here, without the LLM.
+                let corrections = self.loadCorrections()
+                let text = corrections.apply(heard)
                 // Pure-Chinese text was almost always right in the eval: skip the LLM round trip for it.
-                let refine = self.settings.llmEnabled && self.llmConfig.isConfigured && RefinementGate.shouldRefine(text)
+                let refine = self.settings.llmEnabled && self.llmConfig.isConfigured
+                    && (RefinementGate.shouldRefine(text) || corrections.mentionsKnownMistake(text))
                 self.send(.transcriptFinal(session: s, text: text, refine: refine))
             }
 
@@ -124,7 +129,10 @@ import ServiceManagement
 
         case .refine(let s, let text):
             capsule.showRefining()
-            let refiner = Refiner(client: OpenAICompatibleClient(config: llmConfig), vocabulary: currentVocabulary())
+            let refiner = Refiner(
+                client: OpenAICompatibleClient(config: llmConfig), vocabulary: currentVocabulary(),
+                corrections: loadCorrections().hints()
+            )
             refineTask = Task { @MainActor in
                 self.timing.refineStart = .now
                 let outcome = await refiner.refine(text)
@@ -154,6 +162,9 @@ import ServiceManagement
                         restoredClipboard=\(report.clipboardRestored)
                         """)
                     if !report.inputSourceRestored { notice = "Couldn't restore your input method" }
+                    if self.settings.learnFromCorrections, let pid = self.targetPID {
+                        self.editWatcher.watch(pasted: text, pid: pid) { [weak self] found in self?.learn(found) }
+                    }
                 } catch let e as InjectionError {
                     Log.inject.notice("injection refused: \(String(describing: e), privacy: .public)")
                     notice = e.userMessage
@@ -208,6 +219,8 @@ import ServiceManagement
     }
 
     private func startCapture(session s: Int) {
+        // Whatever the user fixed in the previous dictation is learned before this one is recognized.
+        editWatcher.stop()
         for p in [Permission.microphone, .speechRecognition] where !Permissions.isGranted(p) {
             send(.captureFailed(session: s, message: "\(p.title) permission needed — see menu"))
             return
@@ -328,7 +341,34 @@ import ServiceManagement
 
     private func currentVocabulary() -> [String] {
         let user = (try? String(contentsOf: Self.vocabularyURL, encoding: .utf8)).map(Vocabulary.parse) ?? []
-        return Vocabulary.merged(user: user)
+        return Vocabulary.merged(user: user + loadCorrections().vocabularyTerms())
+    }
+
+    // MARK: - Learned corrections
+
+    static var correctionsURL: URL {
+        vocabularyURL.deletingLastPathComponent().appendingPathComponent("corrections.txt")
+    }
+
+    /// Read fresh each time so hand edits to the file apply to the next dictation.
+    private func loadCorrections() -> CorrectionStore {
+        (try? String(contentsOf: Self.correctionsURL, encoding: .utf8)).map(CorrectionStore.parse) ?? CorrectionStore()
+    }
+
+    private func learn(_ found: [Correction]) {
+        var store = loadCorrections()
+        let promoted = store.record(found)
+        let url = Self.correctionsURL
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        do {
+            try store.serialized().write(to: url, atomically: true, encoding: .utf8)
+        } catch {
+            Log.app.error("saving corrections failed: \(error.localizedDescription, privacy: .public)")
+        }
+        Log.app.info("learned \(found.count) correction(s); \(promoted.count) now auto-applied")
+        if let c = promoted.first, machine.phase == .idle {
+            capsule.flash("Learned: \(c.wrong) → \(c.right)")
+        }
     }
 
     // MARK: - Menu
@@ -422,6 +462,20 @@ import ServiceManagement
         vocab.target = self
         menu.addItem(vocab)
 
+        let learnItem = NSMenuItem(title: "Learned Corrections", action: nil, keyEquivalent: "")
+        let learnMenu = NSMenu()
+        let learnToggle = NSMenuItem(title: "Learn From My Edits", action: #selector(toggleLearning), keyEquivalent: "")
+        learnToggle.target = self
+        learnToggle.state = settings.learnFromCorrections ? .on : .off
+        learnToggle.toolTip = "After pasting, watch how you fix words in that field. A fix seen twice is applied automatically."
+        learnMenu.addItem(learnToggle)
+        let count = loadCorrections().entries.count
+        let editLearned = NSMenuItem(title: "Edit Learned Corrections (\(count))…", action: #selector(editCorrections), keyEquivalent: "")
+        editLearned.target = self
+        learnMenu.addItem(editLearned)
+        learnItem.submenu = learnMenu
+        menu.addItem(learnItem)
+
         let loginItem = NSMenuItem(title: "Launch at Login", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
         loginItem.target = self
         switch SMAppService.mainApp.status {
@@ -499,6 +553,20 @@ import ServiceManagement
             capsule.flash("Launch at Login failed: \(error.localizedDescription)")
         }
         Log.app.info("launch-at-login status=\(service.status.rawValue)")
+    }
+
+    @objc private func toggleLearning() {
+        settings.learnFromCorrections.toggle()
+        if !settings.learnFromCorrections { editWatcher.stop() }
+    }
+
+    @objc private func editCorrections() {
+        let url = Self.correctionsURL
+        if !FileManager.default.fileExists(atPath: url.path) {
+            try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? CorrectionStore().serialized().write(to: url, atomically: true, encoding: .utf8)
+        }
+        NSWorkspace.shared.open(url)
     }
 
     @objc private func editVocabulary() {

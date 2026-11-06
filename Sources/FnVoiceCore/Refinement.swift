@@ -22,16 +22,29 @@ public enum RefinementPrompt {
     """
 
     /// The base prompt plus the speaker's vocabulary. ASR biasing via contextualStrings barely
-    /// moves SpeechTranscriber, so the term list is given to the LLM instead.
-    public static func system(vocabulary: [String]) -> String {
-        guard !vocabulary.isEmpty else { return system }
-        return system + """
+    /// moves SpeechTranscriber, so the term list is given to the LLM instead. `corrections` are
+    /// fixes the speaker made by hand to earlier dictations.
+    public static func system(vocabulary: [String], corrections: [Correction] = []) -> String {
+        var s = system
+        if !vocabulary.isEmpty {
+            s += """
 
 
-            Terms this speaker uses. When a recognized word is clearly a garbled version of one of these, \
-            write it with this exact spelling. Never insert a term that wasn't spoken:
-            \(vocabulary.joined(separator: ", "))
-            """
+                Terms this speaker uses. When a recognized word is clearly a garbled version of one of these, \
+                write it with this exact spelling. Never insert a term that wasn't spoken:
+                \(vocabulary.joined(separator: ", "))
+                """
+        }
+        if !corrections.isEmpty {
+            s += """
+
+
+                Mistakes this recognizer made before for this speaker, which the speaker corrected by hand \
+                (recognized → intended). When the same mistake appears and the intended form fits the context, fix it:
+                \(corrections.map { "\($0.wrong) → \($0.right)" }.joined(separator: "\n"))
+                """
+        }
+        return s
     }
 
     public static func user(_ transcript: String) -> String {
@@ -131,8 +144,19 @@ public struct EditGuard: Sendable {
         return out
     }
 
+    /// A changed span: tokens `a` of the original were replaced by tokens `b` of the candidate.
+    public struct AlignedHunk: Equatable, Sendable {
+        public var a: Range<Int>
+        public var b: Range<Int>
+    }
+
     /// Minimal-edit alignment of two token lists, grouped into contiguous changed hunks.
     public static func hunks(_ a: [String], _ b: [String]) -> [Hunk] {
+        alignedHunks(a, b).map { Hunk(deleted: Array(a[$0.a]), inserted: Array(b[$0.b])) }
+    }
+
+    /// Like `hunks`, with positions. Neighbouring hunks are always separated by at least one equal token.
+    public static func alignedHunks(_ a: [String], _ b: [String]) -> [AlignedHunk] {
         let n = a.count, m = b.count
         var d = [[Int]](repeating: [Int](repeating: 0, count: m + 1), count: n + 1)
         for i in 0...n { d[i][0] = i }
@@ -144,27 +168,25 @@ public struct EditGuard: Sendable {
                 }
             }
         }
-        var hunks: [Hunk] = []
-        var current = Hunk(deleted: [], inserted: [])
-        func close() {
-            if !current.deleted.isEmpty || !current.inserted.isEmpty { hunks.append(current) }
-            current = Hunk(deleted: [], inserted: [])
-        }
+        var hunks: [AlignedHunk] = []
+        // Walking backwards: the current hunk ends (exclusive) at endI/endJ.
+        var endI: Int?, endJ: Int?
         var i = n, j = m
+        func close() {
+            if let ei = endI, let ej = endJ, ei > i || ej > j { hunks.append(AlignedHunk(a: i..<ei, b: j..<ej)) }
+            endI = nil; endJ = nil
+        }
+        func open() { if endI == nil { endI = i; endJ = j } }
         while i > 0 || j > 0 {
             if i > 0 && j > 0 && a[i - 1] == b[j - 1] && d[i][j] == d[i - 1][j - 1] {
                 close()
                 i -= 1; j -= 1
             } else if i > 0 && j > 0 && d[i][j] == d[i - 1][j - 1] + 1 {
-                current.deleted.insert(a[i - 1], at: 0)
-                current.inserted.insert(b[j - 1], at: 0)
-                i -= 1; j -= 1
+                open(); i -= 1; j -= 1
             } else if i > 0 && d[i][j] == d[i - 1][j] + 1 {
-                current.deleted.insert(a[i - 1], at: 0)
-                i -= 1
+                open(); i -= 1
             } else {
-                current.inserted.insert(b[j - 1], at: 0)
-                j -= 1
+                open(); j -= 1
             }
         }
         close()
@@ -217,16 +239,21 @@ public struct Refiner: Sendable {
     let client: any LLMClient
     let editGuard: EditGuard
     let vocabulary: [String]
+    let corrections: [Correction]
 
-    public init(client: any LLMClient, vocabulary: [String] = [], editGuard: EditGuard = EditGuard()) {
+    public init(
+        client: any LLMClient, vocabulary: [String] = [], corrections: [Correction] = [],
+        editGuard: EditGuard = EditGuard()
+    ) {
         self.client = client
         self.vocabulary = vocabulary
+        self.corrections = corrections
         self.editGuard = editGuard
     }
 
     public func refine(_ raw: String) async -> RefineOutcome {
         do {
-            let system = RefinementPrompt.system(vocabulary: vocabulary)
+            let system = RefinementPrompt.system(vocabulary: vocabulary, corrections: corrections)
             let output = try await client.complete(system: system, user: RefinementPrompt.user(raw))
             let cleaned = OutputSanitizer.clean(output, original: raw)
             if let reason = editGuard.rejection(original: raw, candidate: cleaned) {

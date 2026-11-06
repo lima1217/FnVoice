@@ -6,11 +6,14 @@ APP="${1:?app}"; PROBE="${2:?probe}"
 OUT="${TMPDIR:-/tmp}/fnvoice-probe.txt"
 LOG="${TMPDIR:-/tmp}/fnvoice-e2e.log"
 TEXT='我在用 Python 写一个 JSON 解析器, it works.'
+# The ABC run also fixes a word over Accessibility and checks FnVoice learned it.
+EDIT='我在用 Python 写一个 JSON 编译器, it works.'
 status=0
 for source in com.apple.keylayout.ABC cjk; do
   rm -f "$LOG"
+  if [ "$source" = com.apple.keylayout.ABC ]; then set -- --edit-to "$EDIT"; else set --; fi
   open -n -W --stdout "$LOG" --stderr "$LOG" "$APP" --args --selftest-inject \
-    --probe "$PROBE" --out "$OUT" --text "$TEXT" --input-source "$source"
+    --probe "$PROBE" --out "$OUT" --text "$TEXT" --input-source "$source" "$@"
   result=$(tail -n1 "$LOG" 2>/dev/null)
   sleep 1
   echo "[$source] $result"

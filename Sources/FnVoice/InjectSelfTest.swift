@@ -1,11 +1,12 @@
 import AppKit
 import FnVoiceCore
 
-/// `FnVoice --selftest-inject --probe <InjectProbe.app> --out <file> --text <text> [--input-source <id>]`
+/// `FnVoice --selftest-inject --probe <InjectProbe.app> --out <file> --text <text> [--input-source <id>] [--edit-to <text>]`
 ///
 /// Drives the real injection path into InjectProbe and checks three things: the probe received
 /// exactly the text, the original multi-type clipboard came back, and the original input source
-/// was restored. Prints a JSON line; exit 0 on pass, 1 on fail, 2 when it couldn't run.
+/// was restored. With `--edit-to`, it then rewrites the probe's text over Accessibility as a user
+/// fixing a word would, and checks that `EditWatcher` learned that fix. Prints a JSON line; exit 0 on pass, 1 on fail, 2 when it couldn't run.
 @MainActor enum InjectSelfTest {
     static let sentinelType = NSPasteboard.PasteboardType("com.local.fnvoice.sentinel")
 
@@ -88,12 +89,26 @@ import FnVoiceCore
             print(#"{"result":"fail","reason":"injection threw \#(error)"}"#)
             return 1
         }
+        let watcher = EditWatcher()
+        var learned: [Correction] = []
+        let editTo = argumentValue("--edit-to", in: args)
+        if editTo != nil {
+            watcher.watch(pasted: text, pid: probe.processIdentifier) { learned = $0 }
+        }
         try? await Task.sleep(for: .milliseconds(500))
 
         let received = (try? String(contentsOfFile: outPath, encoding: .utf8)) ?? ""
         let clipboardOK = pb.string(forType: .string) == marker && pb.data(forType: sentinelType) == blob
         let sourceAfter = inputSources.current()?.id ?? "?"
-        let pass = received == text && clipboardOK && sourceAfter == sourceBefore
+        var pass = received == text && clipboardOK && sourceAfter == sourceBefore
+
+        if let editTo {
+            let edited = setFocusedValue(editTo, pid: probe.processIdentifier)
+            try? await Task.sleep(for: .milliseconds(1500)) // two polls, so the edit counts as stable
+            watcher.stop()
+            let expected = CorrectionExtractor.extract(pasted: text, edited: editTo)
+            pass = pass && edited && !expected.isEmpty && learned == expected
+        }
 
         let frontmost = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "?"
         let result: [String: Any] = [
@@ -107,10 +122,19 @@ import FnVoiceCore
             "inputSourceBefore": sourceBefore,
             "inputSourceAfter": sourceAfter,
             "switchedInputSource": report.switchedInputSource,
+            "learned": learned.map { "\($0.wrong) → \($0.right)" },
         ]
         if let data = try? JSONSerialization.data(withJSONObject: result, options: [.sortedKeys, .withoutEscapingSlashes]) {
             print(String(decoding: data, as: UTF8.self))
         }
         return pass ? 0 : 1
+    }
+
+    private static func setFocusedValue(_ value: String, pid: Int32) -> Bool {
+        let app = AXUIElementCreateApplication(pid)
+        var ref: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(app, kAXFocusedUIElementAttribute as CFString, &ref) == .success,
+              let ref, CFGetTypeID(ref) == AXUIElementGetTypeID() else { return false }
+        return AXUIElementSetAttributeValue(ref as! AXUIElement, kAXValueAttribute as CFString, value as CFString) == .success
     }
 }
