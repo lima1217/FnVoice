@@ -5,7 +5,8 @@ import Foundation
 ///
 /// The text fields trace the pipeline: `raw` (recognizer) → `input` (after learned auto-replacements;
 /// what refinement sees) → `refined` (accepted LLM output, nil when not sent or rejected) →
-/// `pasted` (formatted text actually typed) → `final` (that span after the user's edits).
+/// `pasted` (formatted text actually typed) → `replaced` (what the LLM's answer was swapped in as,
+/// when the raw text was typed first) → `final` (that span after the user's edits).
 public struct DictationRecord: Codable, Equatable, Sendable {
     public enum LLM: String, Codable, Sendable {
         /// Refinement is off or not configured.
@@ -20,6 +21,8 @@ public struct DictationRecord: Codable, Equatable, Sendable {
         case timeout
         /// HTTP, network or decoding failure.
         case error
+        /// The raw text was typed and the next dictation started before the LLM answered.
+        case abandoned
     }
 
     public var id: String
@@ -36,6 +39,10 @@ public struct DictationRecord: Codable, Equatable, Sendable {
     /// nil when injection was refused (e.g. Secure Input); see `injectError`.
     public var pasted: String?
     public var injectError: String?
+    /// Text swapped in for `pasted` once the LLM answered (type-first dictations only).
+    public var replaced: String?
+    /// Why a changed answer was not swapped in: "skipped: text moved", "skipped: app changed", or an injection error.
+    public var replaceError: String?
     /// The pasted span after the user finished editing it. nil when the field couldn't be read
     /// (no Accessibility, password field, text no longer found right after pasting) or watching is off.
     public var final: String?
@@ -45,6 +52,8 @@ public struct DictationRecord: Codable, Equatable, Sendable {
     public var pasteMs: Int?
     /// Fn-up → text typed: what the user waits for.
     public var totalMs: Int?
+    /// LLM answer → swapped in, for type-first dictations.
+    public var replaceMs: Int?
     public var partials: Int?
 
     public init(
@@ -68,10 +77,13 @@ public struct DictationRecord: Codable, Equatable, Sendable {
         return .error
     }
 
-    /// True when the user changed the typed text (whitespace-only changes don't count).
+    /// The text as FnVoice left it in the field: the swapped-in answer, else what was typed.
+    public var typed: String? { replaced ?? pasted }
+
+    /// True when the user changed the text FnVoice left (whitespace-only changes don't count).
     public var userEdited: Bool {
-        guard let final, let pasted else { return false }
-        return final.filter { !$0.isWhitespace } != pasted.filter { !$0.isWhitespace }
+        guard let final, let typed else { return false }
+        return final.filter { !$0.isWhitespace } != typed.filter { !$0.isWhitespace }
     }
 }
 
@@ -146,7 +158,7 @@ public enum LiveEval {
         }
 
         /// What was typed back then, unformatted spacing aside.
-        var shipped: String { record.pasted ?? record.refined ?? record.input }
+        var shipped: String { record.typed ?? record.refined ?? record.input }
     }
 
     /// Markdown report. Accuracy is scored only against records whose final text was observed; the
@@ -165,6 +177,7 @@ public enum LiveEval {
         let stages: [(String, (DictationRecord) -> Int?)] = [
             ("setup (Fn-down → recording)", \.setupMs), ("ASR (Fn-up → text)", \.asrMs),
             ("LLM", \.llmMs), ("paste", \.pasteMs), ("**Fn-up → typed**", \.totalMs),
+            ("in-place swap (LLM answer → replaced)", \.replaceMs),
         ]
         for (name, key) in stages {
             let xs = records.compactMap(key)
@@ -176,8 +189,8 @@ public enum LiveEval {
             + "\(ms(percentile(withLLM, 0.5))) with LLM (n=\(withLLM.count)).\n\n"
 
         out += "| refinement outcome | count | share of sent |\n|---|---|---|\n"
-        let sent = records.filter { [.ok, .guardrail, .timeout, .error].contains($0.llm) }.count
-        for status in [DictationRecord.LLM.ok, .guardrail, .timeout, .error, .skipped, .off] {
+        let sent = records.filter { [.ok, .guardrail, .timeout, .error, .abandoned].contains($0.llm) }.count
+        for status in [DictationRecord.LLM.ok, .guardrail, .timeout, .error, .abandoned, .skipped, .off] {
             let n = records.filter { $0.llm == status }.count
             let share = [.skipped, .off].contains(status) || sent == 0 ? "" : pct(Double(n) / Double(sent))
             out += "| \(status.rawValue) | \(n) | \(share) |\n"
@@ -186,7 +199,13 @@ public enum LiveEval {
         let edited = observed.filter(\.userEdited)
         let refused = records.filter { $0.pasted == nil }.count
         out += "\nFinal text observed for \(observed.count) of \(records.count); the user edited \(edited.count) of those. "
-            + "Injection refused: \(refused).\n\n"
+            + "Injection refused: \(refused).\n"
+        let swapped = records.filter { $0.replaced != nil }.count
+        let missed = records.filter { $0.replaceError != nil }.count
+        if swapped + missed > 0 {
+            out += "LLM answers swapped in after typing: \(swapped); changed answers that could not be swapped in: \(missed).\n"
+        }
+        out += "\n"
 
         // Accuracy against the user's final text.
         let scored = rows.filter { $0.record.final != nil }

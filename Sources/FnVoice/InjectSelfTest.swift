@@ -1,12 +1,16 @@
 import AppKit
 import FnVoiceCore
 
-/// `FnVoice --selftest-inject --probe <InjectProbe.app> --out <file> --text <text> [--input-source <id>] [--edit-to <text>]`
+/// `FnVoice --selftest-inject --probe <InjectProbe.app> --out <file> --text <text> [--input-source <id>]
+///          [--replace-with <text> [--after-move]] [--edit-to <text>]`
 ///
 /// Drives the real injection path into InjectProbe and checks three things: the probe received
 /// exactly the text, the original multi-type clipboard came back, and the original input source
-/// was restored. With `--edit-to`, it then rewrites the probe's text over Accessibility as a user
-/// fixing a word would, and checks that `EditWatcher` learned that fix. Prints a JSON line; exit 0 on pass, 1 on fail, 2 when it couldn't run.
+/// was restored. With `--replace-with`, it then swaps that text in place as a late LLM answer
+/// would be, and checks the probe holds exactly the new text; with `--after-move` it first types
+/// on past the text (over Accessibility), and checks the swap is skipped and nothing changes.
+/// With `--edit-to`, it rewrites the probe's text over Accessibility as a user fixing a word
+/// would, and checks that `EditWatcher` learned that fix. Prints a JSON line; exit 0 on pass, 1 on fail, 2 when it couldn't run.
 @MainActor enum InjectSelfTest {
     static let sentinelType = NSPasteboard.PasteboardType("com.local.fnvoice.sentinel")
 
@@ -89,12 +93,6 @@ import FnVoiceCore
             print(#"{"result":"fail","reason":"injection threw \#(error)"}"#)
             return 1
         }
-        let watcher = EditWatcher()
-        var learned: [Correction] = []
-        let editTo = argumentValue("--edit-to", in: args)
-        if editTo != nil {
-            watcher.watch(pasted: text, pid: probe.processIdentifier) { learned = $0 }
-        }
         try? await Task.sleep(for: .milliseconds(500))
 
         let received = (try? String(contentsOfFile: outPath, encoding: .utf8)) ?? ""
@@ -102,16 +100,47 @@ import FnVoiceCore
         let sourceAfter = inputSources.current()?.id ?? "?"
         var pass = received == text && clipboardOK && sourceAfter == sourceBefore
 
+        // The text FnVoice leaves in the field, which the edit watch below is anchored to.
+        var typed = text
+        var replaceOutcome = "not requested"
+        var afterReplace = received
+        if let replaceWith = argumentValue("--replace-with", in: args) {
+            let moved = args.contains("--after-move")
+            if moved {
+                // The user typed on: the raw text no longer ends at the caret.
+                _ = setFocusedValue(text + " 然后继续", pid: probe.processIdentifier)
+                try? await Task.sleep(for: .milliseconds(300))
+            }
+            let outcome = await InPlaceReplacer.replace(text, with: replaceWith, pid: probe.processIdentifier, injector: injector)
+            replaceOutcome = String(describing: outcome)
+            try? await Task.sleep(for: .milliseconds(500))
+            afterReplace = (try? String(contentsOfFile: outPath, encoding: .utf8)) ?? ""
+            if moved {
+                pass = pass && outcome != .replaced && afterReplace == text + " 然后继续"
+                typed = afterReplace
+            } else {
+                pass = pass && outcome == .replaced && afterReplace == replaceWith
+                typed = replaceWith
+            }
+        }
+
+        let watcher = EditWatcher()
+        var learned: [Correction] = []
+        let editTo = argumentValue("--edit-to", in: args)
         if let editTo {
+            watcher.watch(pasted: typed, pid: probe.processIdentifier) { learned = $0 }
+            try? await Task.sleep(for: .milliseconds(1000)) // let the watch find its baseline
             let edited = setFocusedValue(editTo, pid: probe.processIdentifier)
             try? await Task.sleep(for: .milliseconds(1500)) // two polls, so the edit counts as stable
             watcher.stop()
-            let expected = CorrectionExtractor.extract(pasted: text, edited: editTo)
+            let expected = CorrectionExtractor.extract(pasted: typed, edited: editTo)
             pass = pass && edited && !expected.isEmpty && learned == expected
         }
 
         let frontmost = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "?"
         let result: [String: Any] = [
+            "replaceOutcome": replaceOutcome,
+            "afterReplace": afterReplace,
             "frontmostAtCheck": frontmost,
             "probeWasFrontmost": probeFrontmost,
             "postEventAccess": CGPreflightPostEventAccess(),

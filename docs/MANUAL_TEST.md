@@ -26,8 +26,14 @@ For each cell, check that: ① the text arrives exactly, ② the input method is
 | Fn+↑ / Fn+F5 / Fn+Delete | the normal system action; no dictation |
 | Hold Fn, stay silent, release | capsule disappears, nothing typed |
 | Hold Fn, speak, press Esc before releasing | capsule disappears, nothing typed, Esc not sent to the app |
-| LLM on: release, then Esc during "Refining…" | nothing typed |
-| LLM on: release, then switch app during "Refining…" | not typed; capsule says "App changed — text copied to clipboard"; ⌘V pastes it |
+| LLM on, in TextEdit/Notes: release | raw text appears in ~0.4 s and the capsule hides; 1–2 s later a misheard term (piston → Python) changes in place, caret stays at the end |
+| LLM on, in TextEdit: release, keep typing right away | the raw text stays; no swap, your typing is not disturbed |
+| LLM on, in a chat box: release, press Enter before the answer | message sent with the raw text; nothing else happens |
+| LLM on, in TextEdit: release, press Esc while waiting for the answer | Esc reaches TextEdit; the swap still happens |
+| LLM on, in TextEdit: release, press Fn again before the answer | the first text stays raw; the second dictation works normally |
+| LLM on, in Terminal/iTerm: release | capsule shows "Refining…" and the text is typed once, after the answer (old path) |
+| LLM on, in Terminal: release, then Esc during "Refining…" | nothing typed |
+| LLM on, in Terminal: release, then switch app during "Refining…" | not typed; capsule says "App changed — text copied to clipboard"; ⌘V pastes it |
 | Focus a password field (e.g. Safari login) and dictate | capsule says "Secure input is on…", nothing typed |
 | Connect AirPods while holding Fn | no crash; dictation continues or ends cleanly |
 | Speak continuously for 70 s (server recognition) | auto-finalizes around 55 s and types what was said |

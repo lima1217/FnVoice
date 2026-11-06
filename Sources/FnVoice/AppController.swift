@@ -28,6 +28,9 @@ import ServiceManagement
     private var durationLimitTask: Task<Void, Never>?
     private var tapRetryTimer: Timer?
     private var targetPID: Int32?
+    /// Whether the field focused at Fn-down can be read back through Accessibility, which decides
+    /// between typing the raw text at once (and swapping the LLM's answer in later) and waiting.
+    private var targetReadable = false
     private var signpostState: OSSignpostIntervalState?
     /// Per-dictation timestamps for the latency log line.
     private var timing = LatencyTiming()
@@ -134,7 +137,10 @@ import ServiceManagement
                 )
                 entry.partials = self.active.partialsDuringCapture
                 self.record = (s, entry)
-                self.send(.transcriptFinal(session: s, text: text, refine: refine))
+                // Type first when the answer can be swapped in later; otherwise the user waits for it.
+                let plan: RefinementPlan = !refine ? .none : (self.targetReadable ? .afterTyping : .beforeTyping)
+                self.timing.typedFirst = plan == .afterTyping
+                self.send(.transcriptFinal(session: s, text: text, refine: plan))
             }
 
         case .abortCapture:
@@ -143,7 +149,8 @@ import ServiceManagement
             active.cancel()
 
         case .refine(let s, let text):
-            capsule.showRefining()
+            // Type-first dictations keep showing the text that is going out.
+            if machine.phase == .refining { capsule.showRefining() }
             let refiner = Refiner(
                 client: OpenAICompatibleClient(config: llmConfig), vocabulary: currentVocabulary(),
                 corrections: loadCorrections().hints()
@@ -168,15 +175,18 @@ import ServiceManagement
         case .cancelRefine:
             refineTask?.cancel()
             refineTask = nil
+            // A type-first dictation abandoned by the next Fn press: its text stays as typed.
+            if let (s, entry) = record, entry.pasted != nil {
+                record?.value.llm = .abandoned
+                settle(session: s)
+            }
 
         case .inject(let s, let raw):
             let text = TextFormatter.format(raw)
             capsule.setText(text)
             Task { @MainActor in
                 var notice: String?
-                var entry = self.record?.session == s ? self.record?.value : nil
-                self.record = nil
-                var watching = false
+                var typed = false
                 do {
                     let report = try await self.injector.inject(text, expectedPID: self.targetPID) {
                         self.timing.pasted = .now
@@ -186,35 +196,48 @@ import ServiceManagement
                         restoredClipboard=\(report.clipboardRestored)
                         """)
                     if !report.inputSourceRestored { notice = "Couldn't restore your input method" }
-                    entry?.pasted = text
-                    let learning = self.settings.learnFromCorrections
-                    let keeping = self.settings.keepHistory && entry != nil
-                    if learning || keeping, let pid = self.targetPID {
-                        watching = true
-                        let timed = entry.map { self.timing.fill($0) }
-                        self.editWatcher.watch(pasted: text, pid: pid) { [weak self] found in
-                            if self?.settings.learnFromCorrections == true { self?.learn(found) }
-                        } onSettled: { [weak self] final in
-                            guard var timed else { return }
-                            timed.final = final
-                            self?.saveHistory(timed)
-                        }
-                    }
+                    typed = true
+                    if self.record?.session == s { self.record?.value.pasted = text }
                 } catch let e as InjectionError {
                     Log.inject.notice("injection refused: \(String(describing: e), privacy: .public)")
                     notice = e.userMessage
-                    entry?.injectError = String(describing: e)
+                    if self.record?.session == s { self.record?.value.injectError = String(describing: e) }
                 } catch {
                     notice = error.localizedDescription
-                    entry?.injectError = error.localizedDescription
+                    if self.record?.session == s { self.record?.value.injectError = error.localizedDescription }
                 }
-                if !watching, let entry { self.saveHistory(self.timing.fill(entry)) }
-                self.timing.log(engine: self.activeEngineName, partials: self.active.partialsDuringCapture)
                 if let state = self.signpostState {
                     Log.signposter.endInterval("release-to-inject", state)
                     self.signpostState = nil
                 }
-                self.send(.injected(session: s, notice: notice))
+                self.send(.injected(session: s, notice: notice, typed: typed))
+                // A type-first dictation goes on to the swap; every other one is finished here.
+                if self.machine.phase == .idle || self.machine.session != s { self.settle(session: s) }
+            }
+
+        case .replace(let s, let refined):
+            Task { @MainActor in
+                var notice: String?
+                let text = TextFormatter.format(refined)
+                if let (session, entry) = self.record, session == s, let typed = entry.pasted, text != typed,
+                   let pid = self.targetPID {
+                    let outcome = await InPlaceReplacer.replace(typed, with: text, pid: pid, injector: self.injector)
+                    switch outcome {
+                    case .replaced:
+                        self.timing.replaced = .now
+                        self.record?.value.replaced = text
+                        Log.inject.info("replaced in place")
+                    case .skipped(let why):
+                        self.record?.value.replaceError = "skipped: \(why)"
+                        Log.inject.info("in-place replace skipped: \(why, privacy: .public)")
+                    case .failed(let why):
+                        self.record?.value.replaceError = why
+                        Log.inject.notice("in-place replace failed: \(why, privacy: .public)")
+                        notice = why
+                    }
+                }
+                self.send(.replaced(session: s, notice: notice))
+                self.settle(session: s)
             }
 
         case .hideCapsule:
@@ -222,6 +245,28 @@ import ServiceManagement
 
         case .notify(let message):
             capsule.flash(message)
+        }
+    }
+
+    /// Ends a dictation's bookkeeping once its text is where it will stay: logs the latency line,
+    /// and either watches the field for the user's edits (which also writes the history line when
+    /// the watch settles) or writes the history line now. Runs once per dictation.
+    private func settle(session s: Int) {
+        guard let (session, entry) = record, session == s else { return }
+        record = nil
+        timing.log(engine: activeEngineName, partials: active.partialsDuringCapture)
+        let timed = timing.fill(entry)
+        let learning = settings.learnFromCorrections
+        if learning || settings.keepHistory, let typed = entry.typed, let pid = targetPID {
+            editWatcher.watch(pasted: typed, pid: pid) { [weak self] found in
+                if self?.settings.learnFromCorrections == true { self?.learn(found) }
+            } onSettled: { [weak self] final in
+                var timed = timed
+                timed.final = final
+                self?.saveHistory(timed)
+            }
+        } else {
+            saveHistory(timed)
         }
     }
 
@@ -266,6 +311,9 @@ import ServiceManagement
             return
         }
         timing = LatencyTiming(press: .now)
+        // Decided now, while the field the user is dictating into still has focus.
+        targetReadable = targetPID.map(EditWatcher.canReadFocusedField) ?? false
+        Log.app.debug("target field readable: \(self.targetReadable)")
         let engine = transcriber(for: resolvedEngine)
         let language = settings.language
         let vocabulary = currentVocabulary()
@@ -653,7 +701,9 @@ import ServiceManagement
 }
 
 /// Timestamps of one dictation. Logged as one line, e.g.
-/// `latency engine=speechTranscriber partials=12 setup=120ms asr=310ms llm=640ms paste=95ms release→text=1045ms`.
+/// `latency engine=speechTranscriber partials=12 setup=120ms asr=310ms llm=640ms paste=95ms release→text=1045ms replace=-`.
+/// For a type-first dictation `paste` and `release→text` run from the recognizer, not the LLM,
+/// and `replace` is LLM answer → swapped in.
 struct LatencyTiming {
     var press: ContinuousClock.Instant?
     var ready: ContinuousClock.Instant?
@@ -662,6 +712,12 @@ struct LatencyTiming {
     var refineStart: ContinuousClock.Instant?
     var refineDone: ContinuousClock.Instant?
     var pasted: ContinuousClock.Instant?
+    var replaced: ContinuousClock.Instant?
+    /// The raw text was typed before the LLM answered.
+    var typedFirst = false
+
+    /// What the paste waited for: the recognizer, or the LLM when the text was held for it.
+    private var pasteFrom: ContinuousClock.Instant? { typedFirst ? asrDone : (refineDone ?? asrDone) }
 
     static func ms(_ a: ContinuousClock.Instant?, _ b: ContinuousClock.Instant?) -> String {
         guard let a, let b else { return "-" }
@@ -679,15 +735,16 @@ struct LatencyTiming {
         r.setupMs = Self.ms(int: press, ready)
         r.asrMs = Self.ms(int: release, asrDone)
         r.llmMs = Self.ms(int: refineStart, refineDone)
-        r.pasteMs = Self.ms(int: refineDone ?? asrDone, pasted)
+        r.pasteMs = Self.ms(int: pasteFrom, pasted)
         r.totalMs = Self.ms(int: release, pasted)
+        r.replaceMs = Self.ms(int: refineDone, replaced)
         return r
     }
 
     func log(engine: String, partials: Int) {
-        let pasteFrom = refineDone ?? asrDone
         let line = "engine=\(engine) partials=\(partials) setup=\(Self.ms(press, ready)) asr=\(Self.ms(release, asrDone)) "
-            + "llm=\(Self.ms(refineStart, refineDone)) paste=\(Self.ms(pasteFrom, pasted)) release→text=\(Self.ms(release, pasted))"
+            + "llm=\(Self.ms(refineStart, refineDone)) paste=\(Self.ms(pasteFrom, pasted)) release→text=\(Self.ms(release, pasted)) "
+            + "replace=\(Self.ms(refineDone, replaced))"
         // Notice, not info: info lines live only in the process's memory buffer and vanish when
         // the app is restarted (every `make install`), so `log show --last 7d` showed almost nothing.
         // This line carries only numbers, never transcript text, so persisting it is safe.

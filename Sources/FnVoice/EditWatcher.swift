@@ -74,6 +74,13 @@ import FnVoiceCore
 
     // MARK: - Accessibility
 
+    /// True when the focused field of `pid` can be read back through Accessibility, which is what a
+    /// later in-place replacement needs. Password fields and huge documents count as unreadable.
+    static func canReadFocusedField(pid: Int32) -> Bool {
+        guard let element = focusedElement(pid: pid) else { return false }
+        return value(of: element) != nil
+    }
+
     private struct Baseline {
         var element: AXUIElement
         var value: String
@@ -110,7 +117,7 @@ import FnVoiceCore
         return start..<(start + value[span].count)
     }
 
-    private static func focusedElement(pid: Int32) -> AXUIElement? {
+    static func focusedElement(pid: Int32) -> AXUIElement? {
         let app = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(app, 0.25)
         var ref: CFTypeRef?
@@ -126,7 +133,7 @@ import FnVoiceCore
         return element
     }
 
-    private static func value(of element: AXUIElement) -> String? {
+    static func value(of element: AXUIElement) -> String? {
         var count: CFIndex = 0
         if AXUIElementGetAttributeValueCount(element, kAXValueAttribute as CFString, &count) == .success,
            count > maxFieldLength { return nil }
@@ -137,12 +144,25 @@ import FnVoiceCore
     }
 
     /// Caret position in UTF-16 units.
-    private static func caret(of element: AXUIElement) -> Int? {
+    static func caret(of element: AXUIElement) -> Int? {
+        selectedRange(of: element).map { $0.location + $0.length }
+    }
+
+    /// The selection in UTF-16 units; length 0 is a plain caret.
+    static func selectedRange(of element: AXUIElement) -> NSRange? {
         var ref: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, &ref) == .success,
               let ref, CFGetTypeID(ref) == AXValueGetTypeID() else { return nil }
         var range = CFRange()
         guard AXValueGetValue(ref as! AXValue, .cfRange, &range) else { return nil }
-        return range.location + range.length
+        return NSRange(location: range.location, length: range.length)
+    }
+
+    /// Asks the field to select `range`, and reports whether it did (some apps accept the call and ignore it).
+    static func select(_ range: NSRange, in element: AXUIElement) -> Bool {
+        var cf = CFRange(location: range.location, length: range.length)
+        guard let value = AXValueCreate(.cfRange, &cf) else { return false }
+        guard AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, value) == .success else { return false }
+        return selectedRange(of: element) == range
     }
 }
