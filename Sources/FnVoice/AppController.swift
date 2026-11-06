@@ -461,14 +461,13 @@ import ServiceManagement
         guard FnUsageType.needsHint(rawValue: Self.fnUsageRaw()), !settings.fnHintShown else { return }
         settings.fnHintShown = true
         let alert = NSAlert()
-        alert.messageText = "Set the 🌐/Fn key to “Do Nothing”"
+        alert.messageText = "建议把 🌐 键设为“不执行任何操作”"
         alert.informativeText = """
-            FnVoice suppresses the Fn key while you dictate, but macOS may still open the emoji picker, \
-            switch input source or start Apple Dictation. In System Settings → Keyboard, set \
-            “Press 🌐 key to” to “Do Nothing”.
+            FnVoice 听写时会拦截 Fn 键，但 macOS 仍可能同时弹出表情面板、切换输入法或启动系统听写。\
+            请在“系统设置 › 键盘”中，把“按下 🌐 键时”改为“不执行任何操作”。
             """
-        alert.addButton(withTitle: "Open Keyboard Settings")
-        alert.addButton(withTitle: "Later")
+        alert.addButton(withTitle: "打开键盘设置")
+        alert.addButton(withTitle: "以后再说")
         NSApp.forceActivate()
         if alert.runModal() == .alertFirstButtonReturn { openKeyboardSettings() }
     }
@@ -554,123 +553,142 @@ import ServiceManagement
         menu.removeAllItems()
         if !hotkeys.isInstalled { _ = hotkeys.install() }
 
-        let header = NSMenuItem(title: "按住 Fn 听写 · 双击 Fn 锁定 · Esc 取消", action: nil, keyEquivalent: "")
-        header.isEnabled = false
-        menu.addItem(header)
+        menu.addItem(headerItem())
 
         let missing = Permissions.missing
         if !missing.isEmpty {
             menu.addItem(.separator())
             for p in missing {
-                let item = NSMenuItem(title: "⚠︎ 授予“\(p.title)”权限（\(p.purpose)）…", action: #selector(grantPermission(_:)), keyEquivalent: "")
-                item.target = self
+                let item = menuItem("授予“\(p.title)”权限…", symbol: "exclamationmark.triangle.fill",
+                                    action: #selector(grantPermission(_:)))
+                item.image = Self.symbol("exclamationmark.triangle.fill", color: .systemOrange)
+                item.toolTip = p.purpose
                 item.representedObject = p.title
                 menu.addItem(item)
             }
         }
-        if FnUsageType.needsHint(rawValue: Self.fnUsageRaw()) {
-            let item = NSMenuItem(title: "⚠︎ 将“按下 🌐 键时”设为“不执行任何操作”…", action: #selector(openKeyboardSettingsAction), keyEquivalent: "")
-            item.target = self
-            menu.addItem(item)
-        }
 
+        // Dictation
         menu.addItem(.separator())
-        let languageItem = NSMenuItem(title: "语言", action: nil, keyEquivalent: "")
         let languageMenu = NSMenu()
         for lang in DictationLanguage.allCases {
-            let item = NSMenuItem(title: lang.displayName, action: #selector(selectLanguage(_:)), keyEquivalent: "")
-            item.target = self
+            let item = menuItem(lang.displayName, action: #selector(selectLanguage(_:)))
             item.representedObject = lang.rawValue
             item.state = lang == settings.language ? .on : .off
             languageMenu.addItem(item)
         }
-        languageItem.submenu = languageMenu
-        menu.addItem(languageItem)
+        menu.addItem(submenuItem("语言", symbol: "globe", submenu: languageMenu))
 
-        let engineItem = NSMenuItem(title: "识别引擎", action: nil, keyEquivalent: "")
         let engineMenu = NSMenu()
         let current = resolvedEngine
         for engine in RecognitionEngine.allCases {
-            let item = NSMenuItem(title: engine.displayName, action: #selector(selectEngine(_:)), keyEquivalent: "")
-            item.target = self
+            let unavailable = engine.requiresMacOS26 && !Self.analyzerAvailable
+            let item = menuItem(engine.displayName, action: unavailable ? nil : #selector(selectEngine(_:)))
             item.representedObject = engine.rawValue
             item.state = engine == current ? .on : .off
-            if engine.requiresMacOS26 && !Self.analyzerAvailable {
-                item.isEnabled = false
-                item.action = nil
-            }
+            item.isEnabled = !unavailable
             engineMenu.addItem(item)
         }
-        engineItem.submenu = engineMenu
-        menu.addItem(engineItem)
+        menu.addItem(submenuItem("识别引擎", symbol: "waveform", submenu: engineMenu))
 
-        let llmItem = NSMenuItem(title: "LLM 精修", action: nil, keyEquivalent: "")
         let llmMenu = NSMenu()
-        let configured = llmConfig.isConfigured
-        let toggle = NSMenuItem(title: configured ? "启用" : "启用（未配置）", action: #selector(toggleLLM), keyEquivalent: "")
-        toggle.target = self
+        let toggle = menuItem(llmConfig.isConfigured ? "启用" : "启用（尚未配置 API）", action: #selector(toggleLLM))
         toggle.state = settings.llmEnabled ? .on : .off
         llmMenu.addItem(toggle)
         llmMenu.addItem(.separator())
+        llmMenu.addItem(NSMenuItem.sectionHeader(title: "精修范围"))
         for scope in RefinementScope.allCases {
-            let item = NSMenuItem(title: scope.displayName, action: #selector(selectRefinementScope(_:)), keyEquivalent: "")
-            item.target = self
+            let item = menuItem(scope.displayName, action: #selector(selectRefinementScope(_:)))
             item.representedObject = scope.rawValue
             item.state = scope == settings.refinementScope ? .on : .off
             llmMenu.addItem(item)
         }
         llmMenu.addItem(.separator())
-        let settingsItem = NSMenuItem(title: "设置…", action: #selector(openSettings), keyEquivalent: ",")
-        settingsItem.target = self
-        llmMenu.addItem(settingsItem)
-        llmItem.submenu = llmMenu
-        menu.addItem(llmItem)
+        llmMenu.addItem(menuItem("API 设置…", action: #selector(openSettings)))
+        menu.addItem(submenuItem("AI 精修", symbol: "sparkles", submenu: llmMenu))
 
-        let vocab = NSMenuItem(title: "编辑词汇表…", action: #selector(editVocabulary), keyEquivalent: "")
-        vocab.target = self
-        menu.addItem(vocab)
+        // Words
+        menu.addItem(.separator())
+        menu.addItem(menuItem("编辑词汇表…", symbol: "character.book.closed", action: #selector(editVocabulary)))
 
-        let learnItem = NSMenuItem(title: "已学纠错", action: nil, keyEquivalent: "")
         let learnMenu = NSMenu()
-        let learnToggle = NSMenuItem(title: "从我的修改中学习", action: #selector(toggleLearning), keyEquivalent: "")
-        learnToggle.target = self
+        let learnToggle = menuItem("从我的修改中学习", action: #selector(toggleLearning))
         learnToggle.state = settings.learnFromCorrections ? .on : .off
-        learnToggle.toolTip = "粘贴后观察你在输入框里怎么改词。同一处修改出现两次后会自动替换。"
+        learnToggle.toolTip = "听写后留意你在输入框里怎么改词，同一处修改出现两次后自动替换。"
         learnMenu.addItem(learnToggle)
         let count = loadCorrections().entries.count
-        let editLearned = NSMenuItem(title: "编辑已学纠错（\(count)）…", action: #selector(editCorrections), keyEquivalent: "")
-        editLearned.target = self
-        learnMenu.addItem(editLearned)
-        learnItem.submenu = learnMenu
-        menu.addItem(learnItem)
+        learnMenu.addItem(menuItem(count > 0 ? "查看已学纠错（\(count) 条）…" : "查看已学纠错…", action: #selector(editCorrections)))
+        menu.addItem(submenuItem("自动纠错", symbol: "wand.and.stars", submenu: learnMenu))
 
-        let historyItem = NSMenuItem(title: "听写历史", action: nil, keyEquivalent: "")
         let historyMenu = NSMenu()
-        let keep = NSMenuItem(title: "保留历史", action: #selector(toggleHistory), keyEquivalent: "")
-        keep.target = self
+        let keep = menuItem("保留历史", action: #selector(toggleHistory))
         keep.state = settings.keepHistory ? .on : .off
-        keep.toolTip = "把每次听写的文本、耗时和你最终改定的文字保存到本机的 history.jsonl，供 make eval-live 使用。"
+        keep.toolTip = "把每次听写的文本、耗时和你最终改定的文字保存在本机，不会上传。"
         historyMenu.addItem(keep)
-        let reveal = NSMenuItem(title: "在访达中显示历史文件", action: #selector(revealHistory), keyEquivalent: "")
-        reveal.target = self
-        historyMenu.addItem(reveal)
-        historyItem.submenu = historyMenu
-        menu.addItem(historyItem)
+        historyMenu.addItem(menuItem("在访达中显示…", action: #selector(revealHistory)))
+        menu.addItem(submenuItem("听写历史", symbol: "clock.arrow.circlepath", submenu: historyMenu))
 
-        let loginItem = NSMenuItem(title: "登录时启动", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
-        loginItem.target = self
+        // App
+        menu.addItem(.separator())
+        let loginItem = menuItem("登录时启动", symbol: "power", action: #selector(toggleLaunchAtLogin))
         switch SMAppService.mainApp.status {
         case .enabled: loginItem.state = .on
         case .requiresApproval:
             // Registered, but the user switched it off in System Settings › General › Login Items.
             loginItem.state = .mixed
-            loginItem.title = "登录时启动（需在系统设置中批准）"
+            loginItem.toolTip = "需在“系统设置 › 通用 › 登录项”中允许"
         default: loginItem.state = .off
         }
         menu.addItem(loginItem)
+        menu.addItem(menuItem("关于 FnVoice", symbol: "info.circle", action: #selector(showAbout)))
 
         menu.addItem(.separator())
-        menu.addItem(NSMenuItem(title: "退出 FnVoice", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+        let quit = NSMenuItem(title: "退出 FnVoice", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        quit.image = Self.symbol("rectangle.portrait.and.arrow.right")
+        menu.addItem(quit)
+    }
+
+    /// App name with the gesture cheat sheet underneath, as one non-clickable row.
+    private func headerItem() -> NSMenuItem {
+        let item = NSMenuItem(title: "FnVoice", action: nil, keyEquivalent: "")
+        let title = NSMutableAttributedString(string: "FnVoice", attributes: [
+            .font: NSFont.boldSystemFont(ofSize: NSFont.systemFontSize), .foregroundColor: NSColor.labelColor,
+        ])
+        title.append(NSAttributedString(string: "\n按住 Fn 说话 · 双击 Fn 锁定 · Esc 取消", attributes: [
+            .font: NSFont.menuFont(ofSize: NSFont.smallSystemFontSize), .foregroundColor: NSColor.secondaryLabelColor,
+        ]))
+        item.attributedTitle = title
+        item.image = Self.symbol("mic.circle.fill", color: .controlAccentColor, pointSize: 22)
+        item.isEnabled = false
+        return item
+    }
+
+    private func menuItem(_ title: String, symbol: String? = nil, action: Selector?) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+        item.target = self
+        if let symbol { item.image = Self.symbol(symbol) }
+        return item
+    }
+
+    private func submenuItem(_ title: String, symbol: String, submenu: NSMenu) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        item.image = Self.symbol(symbol)
+        item.submenu = submenu
+        return item
+    }
+
+    private static func symbol(_ name: String, color: NSColor? = nil, pointSize: CGFloat? = nil) -> NSImage? {
+        guard var image = NSImage(systemSymbolName: name, accessibilityDescription: nil) else { return nil }
+        var config = NSImage.SymbolConfiguration(pointSize: pointSize ?? NSFont.systemFontSize, weight: .regular)
+        if let color { config = config.applying(.init(paletteColors: [color])) }
+        image = image.withSymbolConfiguration(config) ?? image
+        image.isTemplate = color == nil
+        return image
+    }
+
+    @objc private func showAbout() {
+        NSApp.forceActivate()
+        NSApp.orderFrontStandardAboutPanel(nil)
     }
 
     @objc private func grantPermission(_ sender: NSMenuItem) {
@@ -683,7 +701,6 @@ import ServiceManagement
         }
     }
 
-    @objc private func openKeyboardSettingsAction() { openKeyboardSettings() }
 
     @objc private func selectLanguage(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String, let lang = DictationLanguage(rawValue: raw) else { return }
