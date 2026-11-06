@@ -113,10 +113,14 @@ import QuartzCore
         resizeToFitText()
     }
 
-    func showRefining() {
+    /// Shows the raw transcript dimmed while the LLM is asked about it, so the user sees what was
+    /// heard instead of an empty capsule for a second or two. Only the text's colour tells it apart
+    /// from the final text, which arrives white.
+    func showRefining(_ transcript: String) {
         guard visible else { return }
         waveform.idle()
-        setPlaceholder("Refining…")
+        let text = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        setPlaceholder(text.isEmpty ? "Refining…" : text)
     }
 
     /// Shows a message briefly, then hides. Works whether or not the capsule is up.

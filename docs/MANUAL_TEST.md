@@ -31,9 +31,9 @@ For each cell, check that: ① the text arrives exactly, ② the input method is
 | LLM on, in a chat box: release, press Enter before the answer | message sent with the raw text; nothing else happens |
 | LLM on, in TextEdit: release, press Esc while waiting for the answer | Esc reaches TextEdit; the swap still happens |
 | LLM on, in TextEdit: release, press Fn again before the answer | the first text stays raw; the second dictation works normally |
-| LLM on, in Terminal/iTerm: release | capsule shows "Refining…" and the text is typed once, after the answer (old path) |
-| LLM on, in Terminal: release, then Esc during "Refining…" | nothing typed |
-| LLM on, in Terminal: release, then switch app during "Refining…" | not typed; capsule says "App changed — text copied to clipboard"; ⌘V pastes it |
+| LLM on, in Terminal/iTerm: release | capsule shows the raw transcript dimmed while waiting, turns white with the answer, and the text is typed once (old path) |
+| LLM on, in Terminal: release, then Esc while the dimmed text is showing | nothing typed |
+| LLM on, in Terminal: release, then switch app while the dimmed text is showing | not typed; capsule says "App changed — text copied to clipboard"; ⌘V pastes it |
 | Focus a password field (e.g. Safari login) and dictate | capsule says "Secure input is on…", nothing typed |
 | Connect AirPods while holding Fn | no crash; dictation continues or ends cleanly |
 | Speak continuously for 70 s (server recognition) | auto-finalizes around 55 s and types what was said |

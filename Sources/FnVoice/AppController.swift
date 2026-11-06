@@ -149,8 +149,9 @@ import ServiceManagement
             active.cancel()
 
         case .refine(let s, let text):
-            // Type-first dictations keep showing the text that is going out.
-            if machine.phase == .refining { capsule.showRefining() }
+            // Type-first dictations keep showing the text that is going out; the waiting path shows
+            // the raw transcript dimmed until the answer replaces it.
+            if machine.phase == .refining { capsule.showRefining(TextFormatter.format(text)) }
             let refiner = Refiner(
                 client: OpenAICompatibleClient(config: llmConfig), vocabulary: currentVocabulary(),
                 corrections: loadCorrections().hints()
