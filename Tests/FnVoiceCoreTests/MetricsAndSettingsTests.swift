@@ -62,22 +62,18 @@ extension MetricsTests {
 }
 
 @Suite struct SmokeVerdictTests {
-    let good = [SmokeVerdict.Clip(id: "m01", partials: 12, cer: 0.15), SmokeVerdict.Clip(id: "m02", partials: 9, cer: 0.2)]
+    let good = [SmokeVerdict.Clip(id: "m01", cer: 0.15), SmokeVerdict.Clip(id: "m02", cer: 0.2)]
 
     @Test func healthyRunPasses() {
-        #expect(SmokeVerdict.failures(clips: good, errors: [], expectLiveText: true).isEmpty)
+        #expect(SmokeVerdict.failures(clips: good, errors: []).isEmpty)
     }
 
     @Test func catchesTheBugsThatShipped() {
         // Silent fallback surfaced as an error per clip.
-        #expect(!SmokeVerdict.failures(clips: [], errors: ["m01: modelDownloading"], expectLiveText: true).isEmpty)
-        // Empty capsule while speaking.
-        let silent = [SmokeVerdict.Clip(id: "m01", partials: 0, cer: 0.1)]
-        #expect(SmokeVerdict.failures(clips: silent, errors: [], expectLiveText: true) == ["no live text while speaking on m01"])
-        #expect(SmokeVerdict.failures(clips: silent, errors: [], expectLiveText: false).isEmpty)
+        #expect(!SmokeVerdict.failures(clips: [], errors: ["m01: modelDownloading"]).isEmpty)
         // Final text truncated to one character.
-        let truncated = [SmokeVerdict.Clip(id: "m01", partials: 5, cer: 0.95), SmokeVerdict.Clip(id: "m02", partials: 5, cer: 1.0)]
-        #expect(SmokeVerdict.failures(clips: truncated, errors: [], expectLiveText: true).count == 1)
+        let truncated = [SmokeVerdict.Clip(id: "m01", cer: 0.95), SmokeVerdict.Clip(id: "m02", cer: 1.0)]
+        #expect(SmokeVerdict.failures(clips: truncated, errors: []).count == 1)
     }
 }
 
@@ -142,13 +138,6 @@ extension MetricsTests {
         #expect(AppSettings(defaults: d).recognitionEngine == .dictationTranscriber)
         AppSettings(defaults: d).recognitionEngine = nil
         #expect(AppSettings(defaults: d).recognitionEngine == nil)
-    }
-
-    @Test func liveTextDefaultsOnAndPersists() {
-        let d = freshDefaults()
-        #expect(AppSettings(defaults: d).showLiveText)
-        AppSettings(defaults: d).showLiveText = false
-        #expect(!AppSettings(defaults: d).showLiveText)
     }
 
     @Test func fnUsageHint() {

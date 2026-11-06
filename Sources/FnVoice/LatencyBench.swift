@@ -34,7 +34,6 @@ import Speech
         case "lingering": .lingering
         default: .processLifetime
         }
-        let fast = argumentValue("--live-text", in: args).map { $0 == "on" } ?? true
         let language = DictationLanguage.simplifiedChinese
         let vocabulary = Vocabulary.merged(user: [])
 
@@ -61,7 +60,7 @@ import Speech
         var prewarmMs: Double?
         if args.contains("--prewarm") {
             let t = ContinuousClock.now
-            await AnalyzerSession.prewarm(engine: engine, language: language, fast: fast)
+            await AnalyzerSession.prewarm(engine: engine, language: language)
             prewarmMs = ms(ContinuousClock.now - t)
         }
 
@@ -71,7 +70,7 @@ import Speech
             let url = corpusURL.deletingLastPathComponent().appendingPathComponent(c.audio!)
             do {
                 let t0 = ContinuousClock.now
-                let session = try await AnalyzerSession.prepare(engine: engine, language: language, vocabulary: vocabulary, fast: fast)
+                let session = try await AnalyzerSession.prepare(engine: engine, language: language, vocabulary: vocabulary)
                 let setup = ms(ContinuousClock.now - t0)
 
                 var updates = 0
@@ -102,11 +101,11 @@ import Speech
             }
         }
 
-        var report = markdown(rows: rows, engine: engine, fast: fast, retention: retentionName, prewarmMs: prewarmMs, llm: refiner != nil)
+        var report = markdown(rows: rows, engine: engine, retention: retentionName, prewarmMs: prewarmMs, llm: refiner != nil)
         var failed = false
         if args.contains("--assert") {
-            let clips = rows.map { SmokeVerdict.Clip(id: $0.id, partials: $0.partials, cer: $0.cer) }
-            let failures = SmokeVerdict.failures(clips: clips, errors: errors, expectLiveText: fast)
+            let clips = rows.map { SmokeVerdict.Clip(id: $0.id, cer: $0.cer) }
+            let failures = SmokeVerdict.failures(clips: clips, errors: errors)
             failed = !failures.isEmpty
             report += failed ? "\nSMOKE: FAIL\n" + failures.map { "- \($0)" }.joined(separator: "\n") + "\n" : "\nSMOKE: PASS\n"
         }
@@ -159,12 +158,12 @@ import Speech
         return sorted[min(sorted.count - 1, Int((Double(sorted.count - 1) * p).rounded()))]
     }
 
-    static func markdown(rows: [Row], engine: RecognitionEngine, fast: Bool, retention: String, prewarmMs: Double?, llm: Bool) -> String {
+    static func markdown(rows: [Row], engine: RecognitionEngine, retention: String, prewarmMs: Double?, llm: Bool) -> String {
         let warm = rows.dropFirst()
         let finalize = rows.map(\.finalize)
         let llms = rows.compactMap(\.llm)
         func f(_ x: Double) -> String { "\(Int(x.rounded())) ms" }
-        var out = "## Latency: \(engine.displayName)\(fast ? " (live text)" : " (accurate)"), retention \(retention)\(prewarmMs != nil ? ", prewarmed" : "")\n\n"
+        var out = "## Latency: \(engine.displayName), retention \(retention)\(prewarmMs != nil ? ", prewarmed" : "")\n\n"
         out += "| stage | p50 | p90 |\n|---|---|---|\n"
         if let prewarmMs { out += "| prewarm (once, at launch) | \(f(prewarmMs)) | |\n" }
         if let first = rows.first { out += "| setup, first press | \(f(first.setup)) | |\n" }
@@ -173,9 +172,9 @@ import Speech
         if llm {
             out += "| LLM refinement (\(llms.count)/\(rows.count) sent by gate) | \(f(percentile(llms, 0.5))) | \(f(percentile(llms, 0.9))) |\n"
         }
-        let withLive = rows.filter { $0.partials > 0 }.count
+        let withPartials = rows.filter { $0.partials > 0 }.count
         let meanCER = rows.isEmpty ? 0 : rows.map(\.cer).reduce(0, +) / Double(rows.count)
-        out += "\nLive text during speech on \(withLive)/\(rows.count) clips. Mean raw CER of final text: \(String(format: "%.1f%%", meanCER * 100)).\n"
+        out += "\nPartial results during speech on \(withPartials)/\(rows.count) clips. Mean raw CER of final text: \(String(format: "%.1f%%", meanCER * 100)).\n"
         let base = 250 + percentile(finalize, 0.5)
         out += "\nRelease → text, p50, excluding paste: \(f(base)) without LLM"
         if llm { out += ", \(f(base + percentile(llms, 0.5))) with LLM" }

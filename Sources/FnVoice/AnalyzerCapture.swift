@@ -8,7 +8,8 @@ import Speech
     var levels: LevelBox { get }
     var onPartial: ((String) -> Void)? { get set }
     var isOnDevice: Bool { get }
-    /// Text updates received while Fn was held; 0 means the capsule showed no live text.
+    /// Text updates received while Fn was held. SpeechTranscriber reports nothing until Fn is
+    /// released, so 0 is normal there; the legacy engine streams partials.
     var partialsDuringCapture: Int { get }
     func start(language: DictationLanguage, vocabulary: [String]) async throws
     /// Stops capture after a short tail and returns the final text, or the error that explains an empty result.
@@ -28,8 +29,7 @@ struct AnalyzerModule {
     let module: any SpeechModule
     let results: AsyncThrowingStream<(text: String, isFinal: Bool), Error>
 
-    /// - Parameter fast: SpeechTranscriber fast mode (live partials, lower accuracy). Menu › Show Live Text.
-    static func make(_ engine: RecognitionEngine, locale: Locale, fast: Bool) -> AnalyzerModule {
+    static func make(_ engine: RecognitionEngine, locale: Locale) -> AnalyzerModule {
         switch engine {
         case .dictationTranscriber:
             let t = DictationTranscriber(
@@ -38,13 +38,18 @@ struct AnalyzerModule {
             )
             return AnalyzerModule(module: t, results: flatten(t.results) { (String($0.text.characters), $0.isFinal) })
         default:
-            // .fastResults makes partials stream while you speak (first text ~1.2 s in). Without it,
-            // SpeechTranscriber sends nothing until Fn is released, so the capsule stays empty.
-            // It costs accuracy (CER after refinement 5.9% → 9.0%); see README › Recognition engines.
+            // Deliberately without .fastResults. It streams partials while you speak (first text
+            // ~1.2 s in), but the final text gets worse: CER after refinement 2.9% → 9.0% on the
+            // 40 mixed clips (Eval/report-speechTranscriber-llm.md vs -fast-llm.md). So SpeechTranscriber
+            // sends nothing until Fn is released and the capsule shows only the waveform meanwhile.
             // A second, accurate analyzer alongside a fast one was tried and is unreliable: the two
             // share Apple's speech service and the accurate one returned a single character.
-            let reporting: Set<SpeechTranscriber.ReportingOption> = fast ? [.volatileResults, .fastResults] : [.volatileResults]
-            let t = SpeechTranscriber(locale: locale, transcriptionOptions: [], reportingOptions: reporting, attributeOptions: [])
+            // No .transcriptionConfidence either: words it scores below 0.5 are nearly always wrong
+            // (9 of the 28 term errors in the corpus, 2 false flags on 60 clips), but handing them
+            // to the LLM as "unsure" made it guess when the sound gave nothing to match
+            // (Stole→Swift for Xcode) and raised CER 2.9% → 3.3%. `Result.alternatives` is always
+            // just the text itself, so there is no n-best to offer instead. See README › Recognition engines.
+            let t = SpeechTranscriber(locale: locale, transcriptionOptions: [], reportingOptions: [.volatileResults], attributeOptions: [])
             return AnalyzerModule(module: t, results: flatten(t.results) { (String($0.text.characters), $0.isFinal) })
         }
     }
@@ -155,8 +160,8 @@ struct AnalyzerModule {
         return (setup, m)
     }
 
-    static func prepare(engine: RecognitionEngine, language: DictationLanguage, vocabulary: [String], fast: Bool) async throws -> AnalyzerSession {
-        let (setup, module) = try await setup(engine, language) { AnalyzerModule.make(engine, locale: $0, fast: fast) }
+    static func prepare(engine: RecognitionEngine, language: DictationLanguage, vocabulary: [String]) async throws -> AnalyzerSession {
+        let (setup, module) = try await setup(engine, language) { AnalyzerModule.make(engine, locale: $0) }
         let analyzer = SpeechAnalyzer(modules: [module.module], options: .init(priority: .userInitiated, modelRetention: retention))
         let context = AnalysisContext()
         context.contextualStrings[.general] = vocabulary
@@ -186,9 +191,9 @@ struct AnalyzerModule {
     }
 
     /// Loads the model ahead of the first Fn press so that press doesn't pay the load time.
-    static func prewarm(engine: RecognitionEngine, language: DictationLanguage, fast: Bool) async {
+    static func prewarm(engine: RecognitionEngine, language: DictationLanguage) async {
         do {
-            let (setup, module) = try await setup(engine, language) { AnalyzerModule.make(engine, locale: $0, fast: fast) }
+            let (setup, module) = try await setup(engine, language) { AnalyzerModule.make(engine, locale: $0) }
             let analyzer = SpeechAnalyzer(modules: [module.module], options: .init(priority: .utility, modelRetention: retention))
             try await analyzer.prepareToAnalyze(in: setup.format)
             await analyzer.cancelAndFinishNow()
@@ -347,12 +352,8 @@ final class AnalyzerAudioSink: @unchecked Sendable {
     private var configObserver: NSObjectProtocol?
     private var generation = 0
 
-    /// Read at each Fn press, so toggling the menu item applies to the next dictation.
-    private let liveText: () -> Bool
-
-    init(engine: RecognitionEngine, liveText: @escaping () -> Bool) {
+    init(engine: RecognitionEngine) {
         engineKind = engine
-        self.liveText = liveText
     }
 
     func start(language: DictationLanguage, vocabulary: [String]) async throws {
@@ -365,7 +366,7 @@ final class AnalyzerAudioSink: @unchecked Sendable {
         sink.beginCapture()
         try startAudio()
         do {
-            let session = try await AnalyzerSession.prepare(engine: engineKind, language: language, vocabulary: vocabulary, fast: liveText())
+            let session = try await AnalyzerSession.prepare(engine: engineKind, language: language, vocabulary: vocabulary)
             guard gen == generation else {
                 session.cancel()
                 return
@@ -444,11 +445,11 @@ final class AnalyzerAudioSink: @unchecked Sendable {
     }
 
     /// Same engine settings as live dictation, on a file (used by --eval).
-    nonisolated static func transcribeFile(_ url: URL, language: DictationLanguage, vocabulary: [String], engine: RecognitionEngine, fast: Bool) async throws -> String {
+    nonisolated static func transcribeFile(_ url: URL, language: DictationLanguage, vocabulary: [String], engine: RecognitionEngine) async throws -> String {
         guard let locale = await AnalyzerModule.supportedLocale(engine, for: language) else {
             throw CaptureError.unsupportedLanguage(language.rawValue)
         }
-        let module = AnalyzerModule.make(engine, locale: locale, fast: fast)
+        let module = AnalyzerModule.make(engine, locale: locale)
         if let request = try await AssetInventory.assetInstallationRequest(supporting: [module.module]) {
             try await request.downloadAndInstall()
         }

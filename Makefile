@@ -64,7 +64,7 @@ verify:
 	@[ -d "$(APP)" ] || $(MAKE) --no-print-directory build
 	Tools/verify.sh "$(APP)"
 
-# Live recognition path on 3 clips: fails on fallbacks, empty capsule, truncated text.
+# Live recognition path on 3 clips: fails on fallbacks or truncated text.
 smoke: build eval-audio
 	Tools/smoke.sh "$(CURDIR)/$(APP)"
 

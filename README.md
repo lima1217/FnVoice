@@ -35,7 +35,7 @@ To start FnVoice at login, run `make install` and enable **Launch at Login** in 
 | `make clean` | remove all build products |
 | `make test` | unit + integration tests (Swift Testing; includes the mock LLM server) |
 | `make check` | the pre-commit guardrail: test + build + verify + smoke (`make hooks` enables the hook once per clone) |
-| `make smoke` | 3 clips through the live recognition path, live text on and off; fails on fallbacks, an empty capsule, or truncated text |
+| `make smoke` | 3 clips through the live recognition path; fails on fallbacks or truncated text |
 | `make verify` | codesign strict verify, entitlements, Info.plist lint, LSUIElement, Gatekeeper (informational) |
 | `make e2e` | real injection into InjectProbe under ABC and your first enabled CJK input method; needs Accessibility for FnVoice.app |
 | `make eval` | ASR + refinement over `Eval/corpus.jsonl`, writes `Eval/report.md` (`ENGINE=legacy\|speechTranscriber\|dictationTranscriber`, `EVAL_OUT=…`) |
@@ -111,8 +111,8 @@ Choose one in the menu under **Recognition Engine**. The choice is remembered.
 
 | Engine | OS | Mean CER, raw | + DeepSeek refinement |
 |---|---|---|---|
-| **SpeechTranscriber**, live text on (default) | macOS 26+ | 14.0% | **9.0%** |
-| SpeechTranscriber, live text off | macOS 26+ | **11.9%** | **2.9%** (5.9% with the earlier prompt and English-only gate) |
+| **SpeechTranscriber** (default) | macOS 26+ | **11.9%** | **2.9%** (5.9% with the earlier prompt and English-only gate) |
+| SpeechTranscriber with `.fastResults` (removed, see below) | macOS 26+ | 14.0% | 9.0% |
 | DictationTranscriber | macOS 26+ | 18.3% | not run |
 | SFSpeechRecognizer (legacy) | macOS 14+ | 18.7% | 16.6% |
 
@@ -120,16 +120,20 @@ Measured with `make eval` on the 40 mixed zh/en clips in `Eval/corpus.jsonl` (th
 
 Why SpeechTranscriber plus the LLM works so well together: legacy turns English words into Chinese sound-alikes (Python → "P3", token → "巧克力"), which an LLM can rarely recover. SpeechTranscriber writes English as near-miss Latin spellings instead (`piston`, `Qberneet`, `sleck`), and the LLM fixes those reliably. Per clip, it beats legacy on 17, loses on 9 and ties on 14.
 
-**Show Live Text While Speaking** (menu › Recognition Engine; on by default) is a real trade-off:
-- In accurate mode, SpeechTranscriber sends no text until Fn is released, so the capsule only shows the waveform.
-- Turning on `.fastResults` streams text into the capsule from about 1.2 s in (on 40/40 clips), and finalize drops from ~110 ms to ~55 ms.
-- The cost is accuracy: CER after DeepSeek goes from 5.9% to 9.0%.
+**No live text while speaking.** SpeechTranscriber sends no text until Fn is released, so the capsule shows only the waveform while you talk. A "Show Live Text" option that turned on `.fastResults` shipped briefly and was removed:
+- It streamed text into the capsule from about 1.2 s in (on 40/40 clips), and finalize dropped from ~110 ms to ~55 ms.
+- But the final text got worse: CER after DeepSeek went from 2.9% to 9.0% (`Eval/report-speechTranscriber-llm.md` vs `Eval/report-speechTranscriber-fast-llm.md`). Three times the errors for a preview wasn't worth it.
 - Running a fast analyzer for display next to an accurate one for typing doesn't work. The two share Apple's speech service, and the accurate one intermittently returned a single character.
 
-With live text off:
+Refinement results on the default engine:
 - Vocabulary in the prompt fixed `bok→bug`, `PER greview→PR review` and `cle→CLI`.
 - The earlier "fix only if obvious" prompt left pure-Chinese homophones alone (`返回只→返回值`, `钱端→前端`), even with every dictation sent. The current prompt fixes them, plus `都可能→Docker`. On the 20 pure-Chinese clips CER went from 0.7% to 0.0%, and across all 60 clips from 3.6% to 2.0%, in two runs.
 - False corrections stayed at 0/28. That set includes sentences built to tempt a homophone "fix" (`我在会议室等你`, `下次再说`).
+
+**The errors that remain** after refinement (2.9% on the mixed set) are English terms the recognizer turned into something with no phonetic trace of the term: `Stole` for Xcode, `even read` for README, `铺设` for push, `算` for JSON. Two attempts to recover them with the LLM were measured and dropped (`Eval/report-speechTranscriber-latinrule-llm.md`, `Eval/report-speechTranscriber-unsure-llm.md`, each run twice with `--gate all`):
+- A prompt rule that a nonsense Latin word next to Chinese is a misheard term to be matched by sound against the term list fixed none of them and lost a context fix (`发→把`): 3.1% instead of 2.9%.
+- Passing the recognizer's own confidence (`.transcriptionConfidence`) and listing the words below 0.5 as "unsure" in the request. The signal itself is precise: 9 of the 28 term errors fall below 0.5 and only 2 correct spans do, across 60 clips. But the model guessed where the sound gave it nothing (`Stole→Swift`, `算→Swift`); a rule to leave such words alone stopped the second guess, not the first: 3.3%. False corrections stayed 0/28 throughout.
+- `Result.alternatives` always holds just the text itself, so there is no n-best list to offer instead.
 
 Some behavior to know about:
 - SpeechTranscriber inserts a space before Latin words only (`用 Python写`); `TextFormatter` normalizes that. It sometimes ends with `。`.
