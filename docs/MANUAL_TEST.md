@@ -31,6 +31,10 @@ For each cell, check that: ① the text arrives exactly, ② the input method is
 | Hold Fn, stay silent, release | capsule disappears, nothing typed |
 | Hold Fn, speak, press Esc before releasing | capsule disappears, nothing typed, Esc not sent to the app |
 | LLM on, in TextEdit/Notes: release | raw text appears in ~0.4 s and the capsule hides; 1–2 s later a misheard term (piston → Python) changes in place, caret stays at the end |
+| LLM on, in TextEdit: say "嗯那个我我觉得这样也行" | swapped in as 我觉得这样也行 (fillers and stutter gone) |
+| LLM on, in TextEdit: say "周三不对周四下午开会" | swapped in as 周四下午开会 |
+| LLM on, in TextEdit: say "明天要做三件事第一写周报第二对需求第三修bug" | swapped in as a lead-in line ending in "：" and three lines numbered "1. " "2. " "3. " |
+| LLM on, in TextEdit: say "这个方案不对我们得重新想想" | the 不对 stays; only punctuation may change |
 | LLM on, in TextEdit: release, keep typing right away | the raw text stays; no swap, your typing is not disturbed |
 | LLM on, in a chat box: release, press Enter before the answer | message sent with the raw text; nothing else happens |
 | LLM on, in TextEdit: release, press Esc while waiting for the answer | Esc reaches TextEdit; the swap still happens |
