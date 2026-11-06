@@ -68,6 +68,8 @@ public struct EvalRow: Sendable {
     public var raw: String?
     public var refined: String?
     public var note: String?
+    /// LLM round trip, when the LLM was called.
+    public var llmMs: Int?
 
     public init(id: String, reference: String, raw: String?, refined: String?, note: String? = nil) {
         self.id = id
@@ -79,20 +81,34 @@ public struct EvalRow: Sendable {
 }
 
 public enum EvalReport {
-    public static func markdown(mixed: [EvalRow], correct: [EvalRow], llmEnabled: Bool, header: String) -> String {
+    public static func markdown(
+        mixed: [EvalRow], correct: [EvalRow], llmEnabled: Bool, header: String, liveTimeoutMs: Int = 4000
+    ) -> String {
         var out = "# FnVoice evaluation\n\n\(header)\n\n"
 
         let scored = mixed.filter { $0.raw != nil }
-        let rawCER = mean(scored.map { ErrorRate.cer(reference: $0.reference, hypothesis: $0.raw ?? "") })
-        let refinedCER = mean(scored.map { ErrorRate.cer(reference: $0.reference, hypothesis: $0.refined ?? $0.raw ?? "") })
-        out += "## Mixed zh/en dictation (\(scored.count)/\(mixed.count) transcribed)\n\n"
-        out += "| metric | value |\n|---|---|\n"
+        out += "## Dictation (\(scored.count)/\(mixed.count) transcribed)\n\n"
+        out += "| set | cases | mean CER, raw ASR | mean CER, after refinement |\n|---|---|---|---|\n"
         if scored.isEmpty {
-            out += "| mean CER, raw ASR | n/a (nothing transcribed; see notes) |\n"
-            out += "| mean CER, after refinement | n/a |\n"
+            out += "| all | 0 | n/a (nothing transcribed; see notes) | n/a |\n"
         } else {
-            out += "| mean CER, raw ASR | \(pct(rawCER)) |\n"
-            out += llmEnabled ? "| mean CER, after refinement | \(pct(refinedCER)) |\n" : "| mean CER, after refinement | n/a (LLM not configured) |\n"
+            let sets: [(String, [EvalRow])] = [
+                ("all", scored),
+                ("zh + English terms", scored.filter { $0.reference.contains { $0.isASCII && $0.isLetter } }),
+                ("Chinese only", scored.filter { !$0.reference.contains { $0.isASCII && $0.isLetter } }),
+            ]
+            for (name, rows) in sets where !rows.isEmpty {
+                let raw = mean(rows.map { ErrorRate.cer(reference: $0.reference, hypothesis: $0.raw ?? "") })
+                let refined = mean(rows.map { ErrorRate.cer(reference: $0.reference, hypothesis: $0.refined ?? $0.raw ?? "") })
+                out += "| \(name) | \(rows.count) | \(pct(raw)) | \(llmEnabled ? pct(refined) : "n/a (LLM not configured)") |\n"
+            }
+        }
+        let latencies = (mixed + correct).compactMap(\.llmMs).sorted()
+        if !latencies.isEmpty {
+            let slow = latencies.filter { $0 > liveTimeoutMs }.count
+            out += "\nLLM latency over \(latencies.count) calls: median \(latencies[latencies.count / 2]) ms, "
+                + "p90 \(latencies[min(latencies.count - 1, latencies.count * 9 / 10)]) ms, max \(latencies.last!) ms; "
+                + "\(slow) over the live \(liveTimeoutMs) ms timeout.\n"
         }
         out += "\n| id | reference | raw | refined | CER raw | CER refined | note |\n|---|---|---|---|---|---|---|\n"
         for r in mixed {

@@ -64,12 +64,30 @@ public struct OpenAICompatibleClient: LLMClient {
     public let config: LLMConfig
     /// Hard limit on the whole request, not URLSession's idle timeout.
     public let timeout: Duration
+    /// If no reply arrives by then, an identical second request races the first. DeepSeek answers
+    /// in ~1.3 s, but about 1 call in 40 takes 4–12 s; the duplicate usually lands in ~1.3 s more.
+    public let hedgeAfter: Duration?
     private let session: URLSession
 
-    public init(config: LLMConfig, timeout: Duration = .seconds(4), session: URLSession? = nil) {
+    public init(
+        config: LLMConfig, timeout: Duration = .seconds(4), hedgeAfter: Duration? = .seconds(2),
+        session: URLSession? = nil
+    ) {
         self.config = config
         self.timeout = timeout
-        self.session = session ?? URLSession(configuration: .ephemeral)
+        self.hedgeAfter = hedgeAfter
+        self.session = session ?? Self.sharedSession
+    }
+
+    /// One session for the app's lifetime keeps the HTTPS connection alive between dictations; a
+    /// new session per request paid DNS + TLS each time and pushed some calls past the timeout.
+    static let sharedSession = URLSession(configuration: .ephemeral)
+
+    private enum Attempt: Sendable {
+        case reply(Data, URLResponse)
+        case failed(Error)
+        case hedge
+        case deadline
     }
 
     public func complete(system: String, user: String) async throws -> String {
@@ -82,27 +100,55 @@ public struct OpenAICompatibleClient: LLMClient {
         request.httpBody = try JSONSerialization.data(withJSONObject: Self.requestBody(config: config, system: system, user: user))
 
         let session = self.session
-        let timeout = self.timeout
         let finalRequest = request
-        let (data, response) = try await withThrowingTaskGroup(of: (Data, URLResponse).self) { group in
-            group.addTask {
-                do {
-                    return try await session.data(for: finalRequest)
-                } catch let e as URLError where e.code == .timedOut {
-                    throw LLMError.timeout
-                } catch let e as URLError where e.code == .cancelled {
-                    throw CancellationError()
-                } catch let e as URLError {
-                    throw LLMError.network(e.localizedDescription)
-                }
+        @Sendable func send() async -> Attempt {
+            do {
+                let (data, response) = try await session.data(for: finalRequest)
+                return .reply(data, response)
+            } catch let e as URLError where e.code == .timedOut {
+                return .failed(LLMError.timeout)
+            } catch let e as URLError where e.code == .cancelled {
+                return .failed(CancellationError())
+            } catch let e as URLError {
+                return .failed(LLMError.network(e.localizedDescription))
+            } catch {
+                return .failed(error)
             }
+        }
+
+        let timeout = self.timeout
+        let hedgeAfter = self.hedgeAfter
+        let (data, response) = try await withThrowingTaskGroup(of: Attempt.self) { group in
+            group.addTask { await send() }
             group.addTask {
                 try await Task.sleep(for: timeout)
-                throw LLMError.timeout
+                return .deadline
+            }
+            if let hedgeAfter, hedgeAfter < timeout {
+                group.addTask {
+                    try await Task.sleep(for: hedgeAfter)
+                    return .hedge
+                }
             }
             defer { group.cancelAll() }
-            guard let first = try await group.next() else { throw LLMError.timeout }
-            return first
+            var inFlight = 1
+            var firstError: Error?
+            while let attempt = try await group.next() {
+                switch attempt {
+                case .reply(let data, let response):
+                    return (data, response)
+                case .hedge:
+                    group.addTask { await send() }
+                    inFlight += 1
+                case .failed(let error):
+                    inFlight -= 1
+                    firstError = firstError ?? error
+                    if inFlight == 0 { throw error }
+                case .deadline:
+                    throw LLMError.timeout
+                }
+            }
+            throw firstError ?? LLMError.timeout
         }
 
         guard let http = response as? HTTPURLResponse else { throw LLMError.malformed }

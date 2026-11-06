@@ -76,7 +76,9 @@ Fn down ─▶ arming (150 ms) ─▶ recording ─▶ Fn up ─▶ finalizing �
   - It diffs what it pasted against the last reading that stayed unchanged for one poll. Readings in the middle of an IME composition are therefore ignored. It keeps only small word substitutions: no punctuation edits, no pure insertions or deletions, and nothing from a sentence that is more than 50% rewritten. A one-character Chinese fix (带→代) is widened with its neighbour (带码→代码), so it can't rewrite every 带.
   - Learned pairs are saved to `~/Library/Application Support/FnVoice/corrections.txt`, which you can edit. **Seen once**, the corrected word joins the recognition vocabulary and the pair is shown to the LLM, and text containing the mistake passes the refinement gate. **Seen twice**, it is replaced automatically, with no LLM needed. Latin words match whole words only. Changing an auto-replaced word back counts against the rule.
 - **LLM refinement** (`Refiner`):
-  - **Gate** (`RefinementGate`): only text containing English letters (or a known sound-alike like 配森) is sent to the LLM. Pure Chinese is typed immediately, saving about 1.1 s.
+  - **Scope** (menu › LLM Refinement): **Refine All Dictations** (default) sends every dictation. **Only When Text Has English** sends only text with English letters, a known sound-alike like 配森, or a mistake you corrected before; pure Chinese is then typed ~1.3 s sooner, but English terms heard as Chinese words (`都可能`→Docker) and Chinese homophones go unfixed.
+  - The prompt names three kinds of recognition error, with examples kept out of the eval corpus: garbled English (`pie torch`→PyTorch), English terms written as Chinese sound-alikes (`瑞迪斯`→Redis), and Chinese homophones that don't fit the sentence (`单原测试`→单元测试). It asks the model to read the whole sentence first and fix a word only when one intended word clearly fits better.
+  - If no reply arrives within 2 s, an identical second request races the first, and the first answer wins. DeepSeek's median is ~1.3 s, but about 1 call in 40 took 4–12 s. The HTTPS connection is reused across dictations.
   - The prompt includes your vocabulary (built-in terms plus Edit Vocabulary…) as "terms this speaker uses". SpeechTranscriber barely reacts to `contextualStrings`, but the LLM does.
   - For DeepSeek hosts, `thinking: {type: disabled}` is sent automatically. `deepseek-flash` otherwise produces 200–800 hidden reasoning tokens (3–6 s) for a ~10-token correction.
   - Uses temperature 0 and a 4 s hard timeout. The transcript is wrapped in `<transcript>` tags, and the prompt says it is data, not instructions.
@@ -110,11 +112,11 @@ Choose one in the menu under **Recognition Engine**. The choice is remembered.
 | Engine | OS | Mean CER, raw | + DeepSeek refinement |
 |---|---|---|---|
 | **SpeechTranscriber**, live text on (default) | macOS 26+ | 14.0% | **9.0%** |
-| SpeechTranscriber, live text off | macOS 26+ | **11.9%** | **5.9%** (5.5% with thinking on, no gate, no vocabulary) |
+| SpeechTranscriber, live text off | macOS 26+ | **11.9%** | **2.9%** (5.9% with the earlier prompt and English-only gate) |
 | DictationTranscriber | macOS 26+ | 18.3% | not run |
 | SFSpeechRecognizer (legacy) | macOS 14+ | 18.7% | 16.6% |
 
-Measured with `make eval` on the 40 mixed zh/en clips in `Eval/corpus.jsonl`: synthesized speech (Tingting voice), on-device, model `deepseek-flash`. The false-correction rate was 0/20 in both refinement runs. The reports are in `Eval/report-*.md`.
+Measured with `make eval` on the 40 mixed zh/en clips in `Eval/corpus.jsonl` (the corpus now also has 20 pure-Chinese clips, reported separately): synthesized speech (Tingting voice), on-device, model `deepseek-flash`. The false-correction rate was 0/20 in both refinement runs. The reports are in `Eval/report-*.md`.
 
 Why SpeechTranscriber plus the LLM works so well together: legacy turns English words into Chinese sound-alikes (Python → "P3", token → "巧克力"), which an LLM can rarely recover. SpeechTranscriber writes English as near-miss Latin spellings instead (`piston`, `Qberneet`, `sleck`), and the LLM fixes those reliably. Per clip, it beats legacy on 17, loses on 9 and ties on 14.
 
@@ -124,10 +126,10 @@ Why SpeechTranscriber plus the LLM works so well together: legacy turns English 
 - The cost is accuracy: CER after DeepSeek goes from 5.9% to 9.0%.
 - Running a fast analyzer for display next to an accurate one for typing doesn't work. The two share Apple's speech service, and the accurate one intermittently returned a single character.
 
-With live text off, the current pipeline trades 0.4 points of CER for ~2–3 s less waiting:
+With live text off:
 - Vocabulary in the prompt fixed `bok→bug`, `PER greview→PR review` and `cle→CLI`.
-- With thinking off, the LLM no longer fixes pure-Chinese homophones (`返回只→返回值`, `钱端→前端`).
-- The gate skipped `都可能` (Docker), which has no English letters.
+- The earlier "fix only if obvious" prompt left pure-Chinese homophones alone (`返回只→返回值`, `钱端→前端`), even with every dictation sent. The current prompt fixes them, plus `都可能→Docker`. On the 20 pure-Chinese clips CER went from 0.7% to 0.0%, and across all 60 clips from 3.6% to 2.0%, in two runs.
+- False corrections stayed at 0/28. That set includes sentences built to tempt a homophone "fix" (`我在会议室等你`, `下次再说`).
 
 Some behavior to know about:
 - SpeechTranscriber inserts a space before Latin words only (`用 Python写`); `TextFormatter` normalizes that. It sometimes ends with `。`.

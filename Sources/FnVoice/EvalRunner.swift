@@ -41,6 +41,7 @@ import Speech
         )
         let userVocabulary = (try? String(contentsOf: AppController.vocabularyURL, encoding: .utf8)).map(Vocabulary.parse) ?? []
         let vocabulary = Vocabulary.merged(user: userVocabulary)
+        let scope = argumentValue("--gate", in: args).flatMap(RefinementScope.init(rawValue:)) ?? settings.refinementScope
         let refiner = config.isConfigured
             ? Refiner(client: OpenAICompatibleClient(config: config, timeout: .seconds(15)), vocabulary: vocabulary)
             : nil
@@ -75,11 +76,13 @@ import Speech
                 do {
                     let raw = try await Self.transcribe(url, language: language, vocabulary: vocabulary, engine: engine, fast: fast)
                     row.raw = raw
-                    if refiner != nil && !RefinementGate.shouldRefine(raw) {
+                    if refiner != nil && !RefinementGate.shouldRefine(raw, scope: scope) {
                         row.refined = raw
                         row.note = "LLM skipped (no English)"
                     } else if let refiner {
+                        let started = ContinuousClock.now
                         let outcome = await refiner.refine(raw)
+                        row.llmMs = Int((ContinuousClock.now - started) / .milliseconds(1))
                         row.refined = outcome.text
                         row.note = outcome.fallbackReason
                     }
@@ -91,12 +94,14 @@ import Speech
 
             case .correct:
                 var row = EvalRow(id: c.id, reference: c.reference, raw: c.reference, refined: nil)
-                if refiner != nil && !RefinementGate.shouldRefine(c.reference) {
+                if refiner != nil && !RefinementGate.shouldRefine(c.reference, scope: scope) {
                     row.refined = c.reference
                     row.note = "LLM skipped (no English)"
                     print("[\(c.id)] skipped by gate")
                 } else if let refiner {
+                    let started = ContinuousClock.now
                     let outcome = await refiner.refine(c.reference)
+                    row.llmMs = Int((ContinuousClock.now - started) / .milliseconds(1))
                     row.refined = outcome.text
                     row.note = outcome.fallbackReason
                     print("[\(c.id)] \(outcome.text == c.reference ? "unchanged" : "CHANGED → \(outcome.text)")")
@@ -107,7 +112,7 @@ import Speech
 
         let header = """
             Generated \(ISO8601DateFormatter().string(from: Date())) · language \(language.rawValue) · engine \(engine.displayName)\(engine == .speechTranscriber ? (fast ? " (live text / fast)" : " (accurate)") : "") · \
-            speech \(speechOK ? "authorized" : "NOT authorized") · LLM \(refiner == nil ? "not configured" : "model \(config.model)")
+            speech \(speechOK ? "authorized" : "NOT authorized") · LLM \(refiner == nil ? "not configured" : "model \(config.model), gate \(scope.rawValue)")
             """
         let report = EvalReport.markdown(mixed: mixed, correct: correct, llmEnabled: refiner != nil, header: header)
         do {

@@ -33,8 +33,12 @@ final class MockLLMServer: Sendable {
         precondition(port > 0, "mock LLM server failed to start")
     }
 
-    func client(model: String, key: String = "test-key", timeout: Duration = .seconds(5)) -> OpenAICompatibleClient {
-        OpenAICompatibleClient(config: LLMConfig(baseURL: baseURL, apiKey: key, model: model), timeout: timeout)
+    func client(
+        model: String, key: String = "test-key", timeout: Duration = .seconds(5), hedgeAfter: Duration? = nil
+    ) -> OpenAICompatibleClient {
+        OpenAICompatibleClient(
+            config: LLMConfig(baseURL: baseURL, apiKey: key, model: model), timeout: timeout, hedgeAfter: hedgeAfter
+        )
     }
 
     func lastRequest() async throws -> [String: Any] {
@@ -113,6 +117,14 @@ final class MockLLMServer: Sendable {
         await #expect(throws: LLMError.unauthorized(401)) {
             try await server.client(model: "echo", key: "nope").complete(system: "s", user: "u")
         }
+    }
+
+    @Test func hedgedRequestBeatsAStalledOne() async throws {
+        let start = ContinuousClock.now
+        let out = try await server.client(model: "slowfirst", timeout: .milliseconds(2500), hedgeAfter: .milliseconds(300))
+            .complete(system: "s", user: RefinementPrompt.user("我用配森"))
+        #expect(out == "我用Python")
+        #expect(ContinuousClock.now - start < .milliseconds(1500))
     }
 
     @Test func slowServerHitsHardTimeout() async {

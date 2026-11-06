@@ -48,7 +48,7 @@ import Testing
         ]
         let md = EvalReport.markdown(mixed: mixed, correct: correct, llmEnabled: true, header: "h")
         #expect(md.contains("False-correction rate: **50.0%** (1/2)"))
-        #expect(md.contains("| mean CER, after refinement | 0.0% |"))
+        #expect(md.contains("| zh + English terms | 1 | 75.0% | 0.0% |"))
     }
 }
 

@@ -50,6 +50,21 @@ public enum RecognitionEngine: String, CaseIterable, Sendable {
     }
 }
 
+/// Which dictations go to the LLM.
+public enum RefinementScope: String, CaseIterable, Sendable {
+    /// Every dictation: also fixes Chinese homophones and English terms heard as Chinese words.
+    case all
+    /// Only text with English letters or a known sound-alike: ~1 s faster for pure Chinese.
+    case englishOnly
+
+    public var displayName: String {
+        switch self {
+        case .all: "Refine All Dictations"
+        case .englishOnly: "Only When Text Has English (faster)"
+        }
+    }
+}
+
 /// Non-secret preferences. The API key lives in the Keychain, never here.
 public final class AppSettings: @unchecked Sendable {
     enum Key {
@@ -61,6 +76,7 @@ public final class AppSettings: @unchecked Sendable {
         static let engine = "recognitionEngine"
         static let liveText = "showLiveText"
         static let learnCorrections = "learnFromCorrections"
+        static let refinementScope = "refinementScope"
     }
 
     private let defaults: UserDefaults
@@ -100,6 +116,11 @@ public final class AppSettings: @unchecked Sendable {
     public var showLiveText: Bool {
         get { defaults.object(forKey: Key.liveText) as? Bool ?? true }
         set { defaults.set(newValue, forKey: Key.liveText) }
+    }
+
+    public var refinementScope: RefinementScope {
+        get { defaults.string(forKey: Key.refinementScope).flatMap(RefinementScope.init(rawValue:)) ?? .all }
+        set { defaults.set(newValue.rawValue, forKey: Key.refinementScope) }
     }
 
     /// Watch the field after pasting and learn from words the user fixes by hand. Default on.

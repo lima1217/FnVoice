@@ -7,6 +7,7 @@ Behaviour is chosen by the request's `model`:
   wrapped    like fix, but wrapped as  修正后：“...”  (tests output sanitizing)
   rewrite    return an unrelated polished paragraph (tests the edit guardrail)
   slow       sleep 3s, then echo (tests the client timeout)
+  slowfirst  odd-numbered requests sleep 3s, even ones answer at once (tests hedged requests)
   malformed  return a non-JSON body
   http500    return HTTP 500
 Requires `Authorization: Bearer test-key`, otherwise 401.
@@ -26,6 +27,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 API_KEY = "test-key"
 FIXES = {"配森": "Python", "杰森": "JSON", "加瓦": "Java", "吉特哈布": "GitHub"}
 LAST = {}
+SLOWFIRST_COUNT = [0]
 
 
 def transcript_of(body):
@@ -78,6 +80,11 @@ class Handler(BaseHTTPRequestHandler):
         if model == "slow":
             time.sleep(3)
             content = text
+        elif model == "slowfirst":
+            SLOWFIRST_COUNT[0] += 1
+            if SLOWFIRST_COUNT[0] % 2 == 1:
+                time.sleep(3)
+            content = fix(text)
         elif model == "malformed":
             data = b"<html>not json</html>"
             self.send_response(200)

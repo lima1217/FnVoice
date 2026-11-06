@@ -118,7 +118,8 @@ import ServiceManagement
                 let text = corrections.apply(heard)
                 // Pure-Chinese text was almost always right in the eval: skip the LLM round trip for it.
                 let refine = self.settings.llmEnabled && self.llmConfig.isConfigured
-                    && (RefinementGate.shouldRefine(text) || corrections.mentionsKnownMistake(text))
+                    && (RefinementGate.shouldRefine(text, scope: self.settings.refinementScope)
+                        || corrections.mentionsKnownMistake(text))
                 self.send(.transcriptFinal(session: s, text: text, refine: refine))
             }
 
@@ -452,6 +453,15 @@ import ServiceManagement
         toggle.target = self
         toggle.state = settings.llmEnabled ? .on : .off
         llmMenu.addItem(toggle)
+        llmMenu.addItem(.separator())
+        for scope in RefinementScope.allCases {
+            let item = NSMenuItem(title: scope.displayName, action: #selector(selectRefinementScope(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = scope.rawValue
+            item.state = scope == settings.refinementScope ? .on : .off
+            llmMenu.addItem(item)
+        }
+        llmMenu.addItem(.separator())
         let settingsItem = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
         settingsItem.target = self
         llmMenu.addItem(settingsItem)
@@ -525,6 +535,12 @@ import ServiceManagement
     @objc private func toggleLLM() {
         settings.llmEnabled.toggle()
         if settings.llmEnabled && !llmConfig.isConfigured { openSettings() }
+    }
+
+    @objc private func selectRefinementScope(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let scope = RefinementScope(rawValue: raw) else { return }
+        settings.refinementScope = scope
+        Log.app.info("refinement scope → \(scope.rawValue, privacy: .public)")
     }
 
     @objc private func openSettings() {
