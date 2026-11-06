@@ -23,6 +23,10 @@ For each cell, check that: ① the text arrives exactly, ② the input method is
 | Scenario | Expected |
 |---|---|
 | Tap Fn briefly (<150 ms) | nothing happens, no capsule |
+| Double-tap Fn, release, speak for 30 s, press Fn | capsule shows 🔒 while recording; text typed after the last press |
+| Double-tap Fn, speak, press Esc | capsule disappears, nothing typed, Esc not sent to the app |
+| Tap Fn, then Fn+← within a third of a second | cursor moves; no recording stays on |
+| Tap Fn, wait 1 s, hold Fn and speak | ordinary hold-to-talk dictation |
 | Fn+↑ / Fn+F5 / Fn+Delete | the normal system action; no dictation |
 | Hold Fn, stay silent, release | capsule disappears, nothing typed |
 | Hold Fn, speak, press Esc before releasing | capsule disappears, nothing typed, Esc not sent to the app |

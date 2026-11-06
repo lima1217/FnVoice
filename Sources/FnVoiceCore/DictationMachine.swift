@@ -8,19 +8,25 @@ import Foundation
 ///   can't be read back through Accessibility, so a later swap would be impossible).
 /// - `injecting` → `refiningInPlace` → `replacing`: type the raw text at once, and when the LLM
 ///   answers something different, swap it in place. The user never waits for the network.
+///
+/// Double-tapping Fn locks recording for long dictation: a quick tap opens `tapped` for
+/// `DictationMachine.tapWindow`, and pressing Fn again inside it starts recording at once, with
+/// `locked` set. Releasing Fn then keeps recording; the next Fn press finishes, Esc cancels.
 public enum DictationPhase: Equatable, Sendable {
     case idle, arming, recording, finalizing, refining, injecting
     /// The raw text is already typed; the LLM is still answering.
     case refiningInPlace
     /// The LLM's answer is being swapped in for the typed raw text.
     case replacing
+    /// Fn was tapped; another press within the tap window locks recording.
+    case tapped
 
     /// Esc can abort these phases. Once text has gone out it is too late to take it back, and
     /// claiming Esc then would steal it from the app the user is already back in.
     public var isCancellable: Bool {
         switch self {
         case .arming, .recording, .finalizing, .refining: true
-        case .idle, .injecting, .refiningInPlace, .replacing: false
+        case .idle, .injecting, .refiningInPlace, .replacing, .tapped: false
         }
     }
 }
@@ -41,6 +47,10 @@ public enum DictationEvent: Equatable, Sendable {
     case comboKey
     case cancel
     case armElapsed(session: Int)
+    case tapWindowElapsed(session: Int)
+    /// Stop recording and transcribe, as Fn-up would, even when recording is locked
+    /// (duration limits use it).
+    case finish(session: Int)
     case transcriptFinal(session: Int, text: String, refine: RefinementPlan)
     case refined(session: Int, text: String)
     /// `typed` is false when injection was refused (secure input, app changed) and nothing went out.
@@ -52,6 +62,8 @@ public enum DictationEvent: Equatable, Sendable {
 public enum DictationEffect: Equatable, Sendable {
     case scheduleArm(session: Int)
     case cancelArm
+    case scheduleTapWindow(session: Int)
+    case cancelTapWindow
     case startCapture(session: Int)
     case stopCapture(session: Int)
     case abortCapture
@@ -74,6 +86,13 @@ public struct DictationMachine: Sendable {
     private var inPlace = false
     /// An LLM answer that arrived while the raw text was still being typed.
     private var pendingRefined: String?
+    /// Recording started by a double tap: Fn-up doesn't stop it, the next Fn press does.
+    public private(set) var locked = false
+    /// The press that locked recording is still held, so a combo key means it was a shortcut.
+    private var lockingPressHeld = false
+
+    /// How long after a quick Fn tap a second press still counts as a double tap.
+    public static let tapWindow: Duration = .milliseconds(350)
 
     public init() {}
 
@@ -90,9 +109,50 @@ public struct DictationMachine: Sendable {
             phase = .arming
             return [.scheduleArm(session: session)]
 
-        case (.arming, .fnUp), (.arming, .comboKey), (.arming, .cancel):
+        case (.arming, .fnUp):
+            phase = .tapped
+            return [.cancelArm, .scheduleTapWindow(session: session)]
+
+        case (.arming, .comboKey), (.arming, .cancel):
             phase = .idle
             return [.cancelArm]
+
+        case (.tapped, .fnDown):
+            reset()
+            session += 1
+            phase = .recording
+            locked = true
+            lockingPressHeld = true
+            return [.cancelTapWindow, .startCapture(session: session)]
+
+        case (.tapped, .tapWindowElapsed(let s)) where s == session:
+            phase = .idle
+            return []
+
+        case (.tapped, .cancel), (.tapped, .comboKey):
+            phase = .idle
+            return [.cancelTapWindow]
+
+        case (.recording, .fnUp) where locked:
+            lockingPressHeld = false
+            return []
+
+        case (.recording, .fnDown) where locked:
+            locked = false
+            phase = .finalizing
+            return [.stopCapture(session: session)]
+
+        case (.recording, .comboKey) where locked && lockingPressHeld:
+            locked = false
+            lockingPressHeld = false
+            phase = .idle
+            return [.abortCapture, .hideCapsule]
+
+        case (.recording, .finish(let s)) where s == session:
+            locked = false
+            lockingPressHeld = false
+            phase = .finalizing
+            return [.stopCapture(session: s)]
 
         case (.arming, .armElapsed(let s)) where s == session:
             phase = .recording
@@ -103,10 +163,14 @@ public struct DictationMachine: Sendable {
             return [.stopCapture(session: session)]
 
         case (.recording, .cancel), (.finalizing, .cancel):
+            locked = false
+            lockingPressHeld = false
             phase = .idle
             return [.abortCapture, .hideCapsule]
 
         case (.recording, .captureFailed(let s, let message)) where s == session:
+            locked = false
+            lockingPressHeld = false
             phase = .idle
             return [.abortCapture, .notify(message)]
 

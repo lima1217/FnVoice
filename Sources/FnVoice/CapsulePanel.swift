@@ -75,12 +75,13 @@ import QuartzCore
 
     // MARK: - Public
 
-    func show(levels: LevelBox) {
+    /// `locked`: recording continues after Fn is released (double-tap), so say how to finish.
+    func show(levels: LevelBox, locked: Bool = false) {
         hideWork?.cancel()
         hideWork = nil
         screen = ScreenLocator.activeScreen()
         waveform.start(levels: levels, jitter: !reduceMotion)
-        setPlaceholder("Listening…")
+        setPlaceholder(locked ? "🔒 Listening · Fn to finish" : "Listening…")
         let frame = frameFor(labelWidth: Metrics.minLabel)
         // Size the window first: the label autoresizes with it, so lay it out afterwards.
         panel.setFrame(frame, display: true)
