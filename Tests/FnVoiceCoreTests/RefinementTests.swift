@@ -70,6 +70,42 @@ struct StubClient: LLMClient {
         #expect(EditGuard.hunks(["a"], ["a"]).isEmpty)
     }
 
+    @Test func punctuationChangesAreFree() {
+        #expect(guardrail.rejection(original: "今天天气不错我们出去走走吧", candidate: "今天天气不错，我们出去走走吧。") == nil)
+        #expect(guardrail.rejection(original: "你好.你吃了吗", candidate: "你好。你吃了吗？") == nil)
+    }
+
+    @Test(arguments: [
+        ("嗯那个我觉得这样也行啊", "我觉得这样也行"),
+        ("呃我们呃明天再说", "我们明天再说"),
+        ("我我我觉得可以", "我觉得可以"),
+        ("这个这个方案挺好", "这个方案挺好"),
+        ("周三，不对，周四开会", "周四开会"),
+        ("我们周三不对是周四开会", "我们周四开会"),
+        ("发给张三，哦不，发给李四", "发给李四"),
+        ("我明天去北京，我是说后天", "我后天去北京"),
+        ("我们用Redis做缓存不对应该是用Memcached", "我们用Memcached做缓存"),
+    ])
+    func disfluencyCleanupIsAccepted(raw: String, cleaned: String) {
+        #expect(guardrail.rejection(original: raw, candidate: cleaned) == nil)
+    }
+
+    @Test(arguments: [
+        // 不对 is content here: nothing follows it, so dropping the sentence is not a correction.
+        ("今天我们要讨论的那个方案不对", "今天我们要讨论的"),
+        // 不是 is never a marker on its own.
+        ("他说的不是真的我们走吧", "真的我们走吧"),
+        // Abandoned span too long to be a correction of what was just said.
+        ("我们今天上午先去公司把所有的会议都开完然后下午再去见客户不对", "然后下午再去见客户"),
+        // The final version after the marker (后天) must be moved in; 去 is already in the sentence.
+        ("我明天去北京开会，我是说去", "我北京开会"),
+        // Content words are not fillers.
+        ("把那个文件发给我", "发给我"),
+    ])
+    func deletingContentIsRejected(raw: String, cleaned: String) {
+        #expect(guardrail.rejection(original: raw, candidate: cleaned) != nil)
+    }
+
     @Test func translationIsRejected() {
         #expect(guardrail.rejection(original: "我今天很开心因为天气很好", candidate: "I am happy today because the weather is nice") != nil)
     }
@@ -110,6 +146,9 @@ struct StubClient: LLMClient {
         #expect(RefinementPrompt.system.contains("瑞迪斯→Redis"))
         #expect(RefinementPrompt.system.contains("单原测试→单元测试"))
         #expect(RefinementPrompt.system.contains("output the input exactly"))
+        // The cleanup is spelled out: fillers, self-corrections, punctuation.
+        #expect(RefinementPrompt.system.contains("周三，不对，周四开会"))
+        #expect(RefinementPrompt.system.contains("Fix punctuation"))
         #expect(RefinementPrompt.user("x") == "<transcript>\nx\n</transcript>")
     }
 }

@@ -59,6 +59,12 @@ import Testing
         #expect(!RefinementGate.shouldRefine("改成5分钟"))
         #expect(!RefinementGate.shouldRefine(""))
     }
+
+    @Test func obviousDisfluencyGoesToTheLLM() {
+        #expect(RefinementGate.shouldRefine("嗯我觉得可以"))
+        #expect(RefinementGate.shouldRefine("周三不对周四开会"))
+        #expect(!RefinementGate.shouldRefine("那个文件就是他发的"))
+    }
 }
 
 @Suite struct VocabularyPromptTests {

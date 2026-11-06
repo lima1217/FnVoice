@@ -1,5 +1,6 @@
 // FnVoice golden corpus. kind=mixed: ASR on audio, then refinement, scored by CER against reference.
 // kind=correct: already-correct text fed straight to refinement; any change counts as a false correction.
+// kind=cleanup: spoken-style input (fillers, stutters, self-corrections, no punctuation) fed to refinement; passes when the words match reference, punctuation ignored.
 {"id": "m01", "kind": "mixed", "reference": "我在用Python写一个JSON解析器", "audio": "audio/m01.aiff"}
 {"id": "m02", "kind": "mixed", "reference": "把这个API的返回值打印出来", "audio": "audio/m02.aiff"}
 {"id": "m03", "kind": "mixed", "reference": "今天把代码push到GitHub上", "audio": "audio/m03.aiff"}
@@ -63,7 +64,7 @@
 {"id": "c01", "kind": "correct", "reference": "今天天气不错，我们出去走走吧。"}
 {"id": "c02", "kind": "correct", "reference": "这个方案我觉得还可以再优化一下。"}
 {"id": "c03", "kind": "correct", "reference": "你把文件发给我，我晚上看。"}
-{"id": "c04", "kind": "correct", "reference": "嗯，我觉得这样也行。"}
+{"id": "c04", "kind": "correct", "reference": "我觉得这样也行。"}
 {"id": "c05", "kind": "correct", "reference": "会议改到明天上午十点了。"}
 {"id": "c06", "kind": "correct", "reference": "我刚才说的那个问题你看了吗？"}
 {"id": "c07", "kind": "correct", "reference": "这个周末我要回家一趟。"}
@@ -88,3 +89,17 @@
 {"id": "c26", "kind": "correct", "reference": "她说的那个地方我去过。"}
 {"id": "c27", "kind": "correct", "reference": "你在哪儿呢？我在楼下。"}
 {"id": "c28", "kind": "correct", "reference": "这个镜像已经推上去了。"}
+{"id": "k01", "kind": "cleanup", "reference": "我觉得这样也行。", "input": "嗯我觉得这样也行"}
+{"id": "k02", "kind": "cleanup", "reference": "我们明天再说吧。", "input": "呃那个我们明天再说吧"}
+{"id": "k03", "kind": "cleanup", "reference": "我觉得这个方案可以。", "input": "我我我觉得这个方案可以"}
+{"id": "k04", "kind": "cleanup", "reference": "周四下午开会。", "input": "周三不对周四下午开会"}
+{"id": "k05", "kind": "cleanup", "reference": "把文件发给李四。", "input": "把文件发给张三哦不发给李四"}
+{"id": "k06", "kind": "cleanup", "reference": "我们用Memcached做缓存。", "input": "我们用Redis做缓存不对应该是用Memcached"}
+{"id": "k07", "kind": "cleanup", "reference": "会议改到四点。", "input": "会议改到三点我是说四点"}
+{"id": "k08", "kind": "cleanup", "reference": "这个接口返回的数据有问题。", "input": "嗯就是说这个接口啊返回的数据有问题"}
+{"id": "k09", "kind": "cleanup", "reference": "今天先到这里吧，明天继续，你看行吗？", "input": "今天先到这里吧明天继续你看行吗"}
+{"id": "k10", "kind": "cleanup", "reference": "这个方案不对，我们得重新想想。", "input": "这个方案不对我们得重新想想"}
+{"id": "k11", "kind": "cleanup", "reference": "不是我做的，是他做的。", "input": "不是我做的是他做的"}
+{"id": "k12", "kind": "cleanup", "reference": "那个文件就是他昨天发的。", "input": "那个文件就是他昨天发的"}
+{"id": "k13", "kind": "cleanup", "reference": "先跑测试然后再部署。", "input": "先跑测试然后再部署"}
+{"id": "k14", "kind": "cleanup", "reference": "我在用Python写一个JSON解析器。", "input": "呃我在用配森写一个那个杰森解析器"}

@@ -92,13 +92,15 @@ eval-audio:
 GAP      ?= 120
 AFTER    ?= 5
 ENGINE   ?=
+# GATE=all|englishOnly overrides the menu setting for which dictations reach the LLM.
+GATE     ?=
 EVAL_OUT ?= Eval/report.md
 eval: build eval-audio
 	@rm -f Eval/eval.log
 	open -n -W --stdout "$(CURDIR)/Eval/eval.log" --stderr "$(CURDIR)/Eval/eval.log" \
 	  --env FNVOICE_LLM_BASE_URL="$$FNVOICE_LLM_BASE_URL" --env FNVOICE_LLM_API_KEY="$$FNVOICE_LLM_API_KEY" \
 	  --env FNVOICE_LLM_MODEL="$$FNVOICE_LLM_MODEL" \
-	  "$(APP)" --args --eval "$(CURDIR)/Eval/corpus.jsonl" --out "$(CURDIR)/$(EVAL_OUT)" $(if $(ENGINE),--engine $(ENGINE))
+	  "$(APP)" --args --eval "$(CURDIR)/Eval/corpus.jsonl" --out "$(CURDIR)/$(EVAL_OUT)" $(if $(ENGINE),--engine $(ENGINE)) $(if $(GATE),--gate $(GATE))
 	@cat Eval/eval.log; echo; echo "report: $(EVAL_OUT)"
 
 # Your own dictations from history.jsonl: re-runs today's corrections + refinement on the recorded

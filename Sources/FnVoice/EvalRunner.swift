@@ -51,6 +51,7 @@ import Speech
 
         var mixed: [EvalRow] = []
         var correct: [EvalRow] = []
+        var cleanup: [EvalRow] = []
         for c in cases {
             switch c.kind {
             case .mixed:
@@ -105,6 +106,22 @@ import Speech
                     print("[\(c.id)] \(outcome.text == c.reference ? "unchanged" : "CHANGED → \(outcome.text)")")
                 }
                 correct.append(row)
+
+            case .cleanup:
+                let input = c.input ?? c.reference
+                var row = EvalRow(id: c.id, reference: c.reference, raw: input, refined: nil)
+                if refiner != nil && !RefinementGate.shouldRefine(input, scope: scope) {
+                    row.refined = input
+                    row.note = "LLM skipped by gate"
+                } else if let refiner {
+                    let started = ContinuousClock.now
+                    let outcome = await refiner.refine(input)
+                    row.llmMs = Int((ContinuousClock.now - started) / .milliseconds(1))
+                    row.refined = outcome.text
+                    row.note = outcome.fallbackReason
+                }
+                print("[\(c.id)] \(input) → \(row.refined ?? "-")")
+                cleanup.append(row)
             }
         }
 
@@ -112,7 +129,7 @@ import Speech
             Generated \(ISO8601DateFormatter().string(from: Date())) · language \(language.rawValue) · engine \(engine.displayName) · \
             speech \(speechOK ? "authorized" : "NOT authorized") · LLM \(refiner == nil ? "not configured" : "model \(config.model), gate \(scope.rawValue)")
             """
-        let report = EvalReport.markdown(mixed: mixed, correct: correct, llmEnabled: refiner != nil, header: header)
+        let report = EvalReport.markdown(mixed: mixed, correct: correct, cleanup: cleanup, llmEnabled: refiner != nil, header: header)
         do {
             try report.write(toFile: outPath, atomically: true, encoding: .utf8)
             print("report written to \(outPath)")
