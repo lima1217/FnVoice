@@ -83,7 +83,7 @@ import Speech
                         let outcome = await refiner.refine(raw)
                         row.llmMs = Int((ContinuousClock.now - started) / .milliseconds(1))
                         row.refined = outcome.text
-                        row.note = outcome.fallbackReason
+                        row.note = outcome.evalNote
                     }
                 } catch {
                     row.note = "ASR error: \(error.localizedDescription)"
@@ -102,7 +102,7 @@ import Speech
                     let outcome = await refiner.refine(c.reference)
                     row.llmMs = Int((ContinuousClock.now - started) / .milliseconds(1))
                     row.refined = outcome.text
-                    row.note = outcome.fallbackReason
+                    row.note = outcome.evalNote
                     print("[\(c.id)] \(outcome.text == c.reference ? "unchanged" : "CHANGED → \(outcome.text)")")
                 }
                 correct.append(row)
@@ -118,7 +118,7 @@ import Speech
                     let outcome = await refiner.refine(input)
                     row.llmMs = Int((ContinuousClock.now - started) / .milliseconds(1))
                     row.refined = outcome.text
-                    row.note = outcome.fallbackReason
+                    row.note = outcome.evalNote
                 }
                 print("[\(c.id)] \(input) → \(row.refined ?? "-")")
                 cleanup.append(row)
@@ -145,5 +145,14 @@ import Speech
             return try await AnalyzerCapture.transcribeFile(url, language: language, vocabulary: vocabulary, engine: engine)
         }
         return try await SpeechCapture.transcribeFile(url, language: language, vocabulary: vocabulary)
+    }
+}
+
+private extension RefineOutcome {
+    /// Why the LLM answer wasn't used as is, with the answer itself when the guard intervened.
+    var evalNote: String? {
+        let parts = [fallbackReason, reverted > 0 ? "put back \(reverted)" : nil, rejected.map { "LLM: \($0)" }]
+        let note = parts.compactMap { $0 }.joined(separator: " · ")
+        return note.isEmpty ? nil : note
     }
 }

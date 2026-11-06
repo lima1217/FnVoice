@@ -47,6 +47,16 @@ import Testing
     }
 }
 
+@Suite struct ListFormattingTests {
+    @Test func keepsLineBreaksAndListNumberSpacing() {
+        let list = "明天要做三件事：\n1. 把周报写完\n2. 跟产品对一下需求\n3. 把那个 bug修掉"
+        #expect(TextFormatter.format(list) == "明天要做三件事：\n1. 把周报写完\n2. 跟产品对一下需求\n3. 把那个 bug 修掉")
+        #expect(TextFormatter.format("第一行  \n  第二行") == "第一行\n第二行")
+        // Not a list: a number mid-line keeps the Chinese no-space rule.
+        #expect(TextFormatter.format("版本 1. 好的") == "版本1.好的")
+    }
+}
+
 @Suite struct RefinementGateTests {
     @Test func englishOrSoundAlikesGoToTheLLM() {
         #expect(RefinementGate.shouldRefine("我在用 piston写"))

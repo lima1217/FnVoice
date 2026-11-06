@@ -103,3 +103,8 @@
 {"id": "k12", "kind": "cleanup", "reference": "那个文件就是他昨天发的。", "input": "那个文件就是他昨天发的"}
 {"id": "k13", "kind": "cleanup", "reference": "先跑测试然后再部署。", "input": "先跑测试然后再部署"}
 {"id": "k14", "kind": "cleanup", "reference": "我在用Python写一个JSON解析器。", "input": "呃我在用配森写一个那个杰森解析器"}
+{"id": "k15", "kind": "cleanup", "reference": "我来看看这个功能好不好用，我用Cursor写了很多代码，我发现它越来越顺手了。", "input": "我来看看这个功能好不好用嗯 ，我用 Cursor。写了很多代码 ，我发现。现它越来越顺手了"}
+{"id": "k16", "kind": "cleanup", "reference": "明天要做三件事：\n1. 把周报写完\n2. 跟产品对一下需求\n3. 把那个bug修掉", "input": "明天要做三件事第一把周报写完第二跟产品对一下需求第三把那个bug修掉"}
+{"id": "k17", "kind": "cleanup", "reference": "这个方案有几个问题：\n1. 性能不够\n2. 成本太高\n3. 维护起来很麻烦", "input": "这个方案有几个问题首先是性能不够其次是成本太高最后是维护起来很麻烦"}
+{"id": "k18", "kind": "cleanup", "reference": "选这个库有两个原因：\n1. 社区活跃\n2. 文档写得好", "input": "选这个库有两个原因一是社区活跃二是文档写得好"}
+{"id": "k19", "kind": "cleanup", "reference": "最后他还是来了。", "input": "最后他还是来了"}

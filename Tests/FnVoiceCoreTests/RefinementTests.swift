@@ -50,11 +50,46 @@ struct StubClient: LLMClient {
         #expect(guardrail.rejection(original: "open the java script file", candidate: "open the JavaScript file") == nil)
     }
 
-    @Test func rejectsRewritesAndDeletions() {
+    @Test func rejectsRewrites() {
         #expect(guardrail.rejection(original: "今天下午三点开会讨论一下接口设计", candidate: "会议定于今日15:00，议题：API设计。") != nil)
-        #expect(guardrail.rejection(original: "嗯那个我们明天再说吧然后你先休息", candidate: "我们明天再说") != nil)
         #expect(guardrail.rejection(original: "好的", candidate: "好的，我明白了，我会马上处理这个问题并及时反馈给你") != nil)
         #expect(guardrail.rejection(original: "原文", candidate: "") != nil)
+    }
+
+    @Test func droppedClauseIsPutBackAndTheRestKept() {
+        // A real dictation: the LLM cleaned the filler, stutter and punctuation but also dropped the
+        // first clause. Only the clause comes back (without its 嗯); the good changes stay.
+        let raw = "我来试试新的版本好不好用嗯 ，我用 Agent。做了很多事情 ，我发现。现它越来越好用了"
+        let llm = "我用 Agent 做了很多事情，我发现它越来越好用了。"
+        let r = guardrail.review(original: raw, candidate: llm)
+        #expect(r.rejection == nil)
+        #expect(r.reverted == 1)
+        #expect(r.text == "我来试试新的版本好不好用 ，我用 Agent 做了很多事情，我发现它越来越好用了。")
+    }
+
+    @Test(arguments: [
+        ("明天要做三件事第一把周报写完第二跟产品对一下需求第三把bug修掉",
+         "明天要做三件事：\n1. 把周报写完\n2. 跟产品对一下需求\n3. 把bug修掉"),
+        ("这个方案有几个问题首先是性能不够其次是成本太高最后是维护起来很麻烦",
+         "这个方案有几个问题：\n1. 性能不够\n2. 成本太高\n3. 维护起来很麻烦"),
+    ])
+    func spokenListBecomesNumberedList(raw: String, list: String) {
+        let r = guardrail.review(original: raw, candidate: list)
+        #expect(r.rejection == nil && r.reverted == 0)
+        #expect(r.text == list)
+    }
+
+    @Test func fillerNextToARepeatedCharacterIsStillFree() {
+        // 一个那个: a plain diff deletes 个那, which no longer looks like a filler.
+        let r = guardrail.review(original: "呃我在用配森写一个那个杰森解析器", candidate: "我在用Python写一个JSON解析器")
+        #expect(r.rejection == nil && r.reverted == 0)
+    }
+
+    @Test func droppedTailIsPutBack() {
+        let r = guardrail.review(original: "嗯那个我们明天再说吧然后你先休息", candidate: "我们明天再说。")
+        #expect(r.text == "我们明天再说吧然后你先休息。")
+        // In the middle, the punctuation before the dropped span comes back with it.
+        #expect(guardrail.review(original: "先吃饭，然后去散步，再回家", candidate: "先吃饭，再回家。").text == "先吃饭，然后去散步，再回家。")
     }
 
     @Test func manyTermFixesInOneSentenceAreAccepted() {
@@ -95,15 +130,24 @@ struct StubClient: LLMClient {
         ("今天我们要讨论的那个方案不对", "今天我们要讨论的"),
         // 不是 is never a marker on its own.
         ("他说的不是真的我们走吧", "真的我们走吧"),
-        // Abandoned span too long to be a correction of what was just said.
-        ("我们今天上午先去公司把所有的会议都开完然后下午再去见客户不对", "然后下午再去见客户"),
-        // The final version after the marker (后天) must be moved in; 去 is already in the sentence.
+        // The final version after the marker must be moved in; 去 is already in the sentence.
         ("我明天去北京开会，我是说去", "我北京开会"),
-        // Content words are not fillers.
+        // Content words are not fillers, however short the deletion.
         ("把那个文件发给我", "发给我"),
+        ("请把文件发给我", "请发给我"),
+        // A doubled verb is a word, not a stutter.
+        ("我来看看这个功能", "我来看这个功能"),
+        ("你试试这个", "你试这个"),
     ])
-    func deletingContentIsRejected(raw: String, cleaned: String) {
-        #expect(guardrail.rejection(original: raw, candidate: cleaned) != nil)
+    func droppedContentComesBack(raw: String, cleaned: String) {
+        let r = guardrail.review(original: raw, candidate: cleaned)
+        #expect(ErrorRate.normalize(r.text) == ErrorRate.normalize(raw))
+    }
+
+    @Test func mostlyPutBackIsARewrite() {
+        // Abandoned span too long to be a correction: putting it back would be most of the text.
+        let raw = "我们今天上午先去公司把所有的会议都开完然后下午再去见客户不对"
+        #expect(guardrail.rejection(original: raw, candidate: "然后下午再去见客户") != nil)
     }
 
     @Test func translationIsRejected() {
