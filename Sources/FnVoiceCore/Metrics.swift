@@ -38,6 +38,9 @@ public struct EvalCase: Codable, Equatable, Sendable {
         case mixed
         /// Already-correct text: feed straight to refinement; any change is a false correction.
         case correct
+        /// Spoken-style text (fillers, stutters, self-corrections, missing punctuation): feed `input`
+        /// to refinement; it passes when the output matches `reference`, punctuation ignored.
+        case cleanup
     }
 
     public var id: String
@@ -45,12 +48,15 @@ public struct EvalCase: Codable, Equatable, Sendable {
     public var reference: String
     /// Audio path relative to the corpus file. Optional for `correct` cases.
     public var audio: String?
+    /// What refinement is given, for `cleanup` cases.
+    public var input: String?
 
-    public init(id: String, kind: Kind, reference: String, audio: String? = nil) {
+    public init(id: String, kind: Kind, reference: String, audio: String? = nil, input: String? = nil) {
         self.id = id
         self.kind = kind
         self.reference = reference
         self.audio = audio
+        self.input = input
     }
 
     public static func loadJSONL(_ text: String) throws -> [EvalCase] {
@@ -82,7 +88,8 @@ public struct EvalRow: Sendable {
 
 public enum EvalReport {
     public static func markdown(
-        mixed: [EvalRow], correct: [EvalRow], llmEnabled: Bool, header: String, liveTimeoutMs: Int = 4000
+        mixed: [EvalRow], correct: [EvalRow], cleanup: [EvalRow] = [], llmEnabled: Bool, header: String,
+        liveTimeoutMs: Int = 4000
     ) -> String {
         var out = "# FnVoice evaluation\n\n\(header)\n\n"
 
@@ -103,7 +110,7 @@ public enum EvalReport {
                 out += "| \(name) | \(rows.count) | \(pct(raw)) | \(llmEnabled ? pct(refined) : "n/a (LLM not configured)") |\n"
             }
         }
-        let latencies = (mixed + correct).compactMap(\.llmMs).sorted()
+        let latencies = (mixed + correct + cleanup).compactMap(\.llmMs).sorted()
         if !latencies.isEmpty {
             let slow = latencies.filter { $0 > liveTimeoutMs }.count
             out += "\nLLM latency over \(latencies.count) calls: median \(latencies[latencies.count / 2]) ms, "
@@ -119,7 +126,8 @@ public enum EvalReport {
 
         out += "\n## False corrections on already-correct text\n\n"
         if llmEnabled {
-            let changed = correct.filter { $0.refined != nil && $0.refined != $0.reference }
+            // Punctuation fixes are part of the cleanup, so only a change to the words counts.
+            let changed = correct.filter { $0.refined != nil && !sameWords($0.refined!, $0.reference) }
             let rate = correct.isEmpty ? 0 : Double(changed.count) / Double(correct.count)
             out += "False-correction rate: **\(pct(rate))** (\(changed.count)/\(correct.count)), target 0%.\n\n"
             if !changed.isEmpty {
@@ -129,8 +137,25 @@ public enum EvalReport {
         } else {
             out += "Skipped: LLM not configured.\n"
         }
+
+        if !cleanup.isEmpty {
+            out += "\n## Cleanup of spoken text (fillers, self-corrections, punctuation)\n\n"
+            if llmEnabled {
+                let ok = cleanup.filter { r in r.refined.map { sameWords($0, r.reference) } ?? false }
+                out += "Matched: **\(ok.count)/\(cleanup.count)** (punctuation ignored), target all.\n\n"
+                out += "| id | input | expected | output | note |\n|---|---|---|---|---|\n"
+                for r in cleanup {
+                    let mark = r.refined.map { sameWords($0, r.reference) } == true ? "ok" : "MISS"
+                    out += "| \(r.id) | \(cell(r.raw)) | \(cell(r.reference)) | \(cell(r.refined)) | \(mark)\(r.note.map { " · " + $0 } ?? "") |\n"
+                }
+            } else {
+                out += "Skipped: LLM not configured.\n"
+            }
+        }
         return out
     }
+
+    static func sameWords(_ a: String, _ b: String) -> Bool { ErrorRate.normalize(a) == ErrorRate.normalize(b) }
 
     static func mean(_ xs: [Double]) -> Double { xs.isEmpty ? 0 : xs.reduce(0, +) / Double(xs.count) }
     static func pct(_ x: Double) -> String { String(format: "%.1f%%", x * 100) }

@@ -36,6 +36,7 @@ import Testing
         let cases = try EvalCase.loadJSONL(String(contentsOf: url, encoding: .utf8))
         #expect(cases.filter { $0.kind == .mixed }.count >= 40)
         #expect(cases.filter { $0.kind == .correct }.count >= 20)
+        #expect(cases.filter { $0.kind == .cleanup }.allSatisfy { $0.input != nil })
         #expect(Set(cases.map(\.id)).count == cases.count)
         #expect(cases.filter { $0.kind == .mixed }.allSatisfy { $0.audio != nil })
     }
@@ -44,11 +45,23 @@ import Testing
         let mixed = [EvalRow(id: "m1", reference: "我用Python", raw: "我用配森", refined: "我用Python")]
         let correct = [
             EvalRow(id: "c1", reference: "好的", raw: "好的", refined: "好的"),
-            EvalRow(id: "c2", reference: "没问题", raw: "没问题", refined: "没问题。"),
+            EvalRow(id: "c2", reference: "没问题", raw: "没问题", refined: "没有问题"),
+            // Punctuation fixes are part of the cleanup, not a false correction.
+            EvalRow(id: "c3", reference: "好吧", raw: "好吧", refined: "好吧。"),
         ]
         let md = EvalReport.markdown(mixed: mixed, correct: correct, llmEnabled: true, header: "h")
-        #expect(md.contains("False-correction rate: **50.0%** (1/2)"))
+        #expect(md.contains("False-correction rate: **33.3%** (1/3)"))
         #expect(md.contains("| zh + English terms | 1 | 75.0% | 0.0% |"))
+    }
+
+    @Test func reportScoresCleanupIgnoringPunctuation() {
+        let cleanup = [
+            EvalRow(id: "k1", reference: "周四开会。", raw: "周三不对周四开会", refined: "周四开会"),
+            EvalRow(id: "k2", reference: "我觉得可以。", raw: "嗯我觉得可以", refined: "嗯我觉得可以"),
+        ]
+        let md = EvalReport.markdown(mixed: [], correct: [], cleanup: cleanup, llmEnabled: true, header: "h")
+        #expect(md.contains("Matched: **1/2**"))
+        #expect(md.contains("| k2 | 嗯我觉得可以 | 我觉得可以。 | 嗯我觉得可以 | MISS |"))
     }
 }
 
