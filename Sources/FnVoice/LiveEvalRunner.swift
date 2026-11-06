@@ -13,7 +13,7 @@ import FnVoiceCore
             ?? AppController.historyURL.path
         let outPath = argumentValue("--out", in: args) ?? "Eval/report-live.md"
         guard let text = try? String(contentsOfFile: path, encoding: .utf8) else {
-            print("no history at \(path): dictate with menu › Dictation History › Keep History on")
+            print("no history at \(path): dictate with menu › 听写历史 › 保留历史 on")
             return 66
         }
         var records = DictationHistory.parse(text)

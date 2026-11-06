@@ -7,19 +7,19 @@ enum Permission: CaseIterable {
 
     var title: String {
         switch self {
-        case .accessibility: "Accessibility"
-        case .inputMonitoring: "Input Monitoring"
-        case .microphone: "Microphone"
-        case .speechRecognition: "Speech Recognition"
+        case .accessibility: "辅助功能"
+        case .inputMonitoring: "输入监控"
+        case .microphone: "麦克风"
+        case .speechRecognition: "语音识别"
         }
     }
 
     var purpose: String {
         switch self {
-        case .accessibility: "to suppress Fn and paste text"
-        case .inputMonitoring: "to detect the Fn key"
-        case .microphone: "to hear you"
-        case .speechRecognition: "to transcribe"
+        case .accessibility: "用于拦截 Fn 键并粘贴文字"
+        case .inputMonitoring: "用于检测 Fn 键"
+        case .microphone: "用于收音"
+        case .speechRecognition: "用于转写"
         }
     }
 

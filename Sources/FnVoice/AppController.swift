@@ -323,7 +323,7 @@ import ServiceManagement
         editWatcher.stop()
         record = nil
         for p in [Permission.microphone, .speechRecognition] where !Permissions.isGranted(p) {
-            send(.captureFailed(session: s, message: "\(p.title) permission needed — see menu"))
+            send(.captureFailed(session: s, message: "需要“\(p.title)”权限，请查看菜单"))
             return
         }
         timing = LatencyTiming(press: .now)
@@ -504,7 +504,7 @@ import ServiceManagement
         menu.removeAllItems()
         if !hotkeys.isInstalled { _ = hotkeys.install() }
 
-        let header = NSMenuItem(title: "Hold Fn to dictate · Double-tap Fn to lock · Esc to cancel", action: nil, keyEquivalent: "")
+        let header = NSMenuItem(title: "按住 Fn 听写 · 双击 Fn 锁定 · Esc 取消", action: nil, keyEquivalent: "")
         header.isEnabled = false
         menu.addItem(header)
 
@@ -512,20 +512,20 @@ import ServiceManagement
         if !missing.isEmpty {
             menu.addItem(.separator())
             for p in missing {
-                let item = NSMenuItem(title: "⚠︎ Grant \(p.title) (\(p.purpose))…", action: #selector(grantPermission(_:)), keyEquivalent: "")
+                let item = NSMenuItem(title: "⚠︎ 授予“\(p.title)”权限（\(p.purpose)）…", action: #selector(grantPermission(_:)), keyEquivalent: "")
                 item.target = self
                 item.representedObject = p.title
                 menu.addItem(item)
             }
         }
         if FnUsageType.needsHint(rawValue: Self.fnUsageRaw()) {
-            let item = NSMenuItem(title: "⚠︎ Set “Press 🌐 key to” → Do Nothing…", action: #selector(openKeyboardSettingsAction), keyEquivalent: "")
+            let item = NSMenuItem(title: "⚠︎ 将“按下 🌐 键时”设为“不执行任何操作”…", action: #selector(openKeyboardSettingsAction), keyEquivalent: "")
             item.target = self
             menu.addItem(item)
         }
 
         menu.addItem(.separator())
-        let languageItem = NSMenuItem(title: "Language", action: nil, keyEquivalent: "")
+        let languageItem = NSMenuItem(title: "语言", action: nil, keyEquivalent: "")
         let languageMenu = NSMenu()
         for lang in DictationLanguage.allCases {
             let item = NSMenuItem(title: lang.displayName, action: #selector(selectLanguage(_:)), keyEquivalent: "")
@@ -537,7 +537,7 @@ import ServiceManagement
         languageItem.submenu = languageMenu
         menu.addItem(languageItem)
 
-        let engineItem = NSMenuItem(title: "Recognition Engine", action: nil, keyEquivalent: "")
+        let engineItem = NSMenuItem(title: "识别引擎", action: nil, keyEquivalent: "")
         let engineMenu = NSMenu()
         let current = resolvedEngine
         for engine in RecognitionEngine.allCases {
@@ -554,10 +554,10 @@ import ServiceManagement
         engineItem.submenu = engineMenu
         menu.addItem(engineItem)
 
-        let llmItem = NSMenuItem(title: "LLM Refinement", action: nil, keyEquivalent: "")
+        let llmItem = NSMenuItem(title: "LLM 精修", action: nil, keyEquivalent: "")
         let llmMenu = NSMenu()
         let configured = llmConfig.isConfigured
-        let toggle = NSMenuItem(title: configured ? "Enabled" : "Enabled (not configured)", action: #selector(toggleLLM), keyEquivalent: "")
+        let toggle = NSMenuItem(title: configured ? "启用" : "启用（未配置）", action: #selector(toggleLLM), keyEquivalent: "")
         toggle.target = self
         toggle.state = settings.llmEnabled ? .on : .off
         llmMenu.addItem(toggle)
@@ -570,57 +570,57 @@ import ServiceManagement
             llmMenu.addItem(item)
         }
         llmMenu.addItem(.separator())
-        let settingsItem = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
+        let settingsItem = NSMenuItem(title: "设置…", action: #selector(openSettings), keyEquivalent: ",")
         settingsItem.target = self
         llmMenu.addItem(settingsItem)
         llmItem.submenu = llmMenu
         menu.addItem(llmItem)
 
-        let vocab = NSMenuItem(title: "Edit Vocabulary…", action: #selector(editVocabulary), keyEquivalent: "")
+        let vocab = NSMenuItem(title: "编辑词汇表…", action: #selector(editVocabulary), keyEquivalent: "")
         vocab.target = self
         menu.addItem(vocab)
 
-        let learnItem = NSMenuItem(title: "Learned Corrections", action: nil, keyEquivalent: "")
+        let learnItem = NSMenuItem(title: "已学纠错", action: nil, keyEquivalent: "")
         let learnMenu = NSMenu()
-        let learnToggle = NSMenuItem(title: "Learn From My Edits", action: #selector(toggleLearning), keyEquivalent: "")
+        let learnToggle = NSMenuItem(title: "从我的修改中学习", action: #selector(toggleLearning), keyEquivalent: "")
         learnToggle.target = self
         learnToggle.state = settings.learnFromCorrections ? .on : .off
-        learnToggle.toolTip = "After pasting, watch how you fix words in that field. A fix seen twice is applied automatically."
+        learnToggle.toolTip = "粘贴后观察你在输入框里怎么改词。同一处修改出现两次后会自动替换。"
         learnMenu.addItem(learnToggle)
         let count = loadCorrections().entries.count
-        let editLearned = NSMenuItem(title: "Edit Learned Corrections (\(count))…", action: #selector(editCorrections), keyEquivalent: "")
+        let editLearned = NSMenuItem(title: "编辑已学纠错（\(count)）…", action: #selector(editCorrections), keyEquivalent: "")
         editLearned.target = self
         learnMenu.addItem(editLearned)
         learnItem.submenu = learnMenu
         menu.addItem(learnItem)
 
-        let historyItem = NSMenuItem(title: "Dictation History", action: nil, keyEquivalent: "")
+        let historyItem = NSMenuItem(title: "听写历史", action: nil, keyEquivalent: "")
         let historyMenu = NSMenu()
-        let keep = NSMenuItem(title: "Keep History", action: #selector(toggleHistory), keyEquivalent: "")
+        let keep = NSMenuItem(title: "保留历史", action: #selector(toggleHistory), keyEquivalent: "")
         keep.target = self
         keep.state = settings.keepHistory ? .on : .off
-        keep.toolTip = "Save each dictation's text, timings and your final edit to history.jsonl on this Mac, for make eval-live."
+        keep.toolTip = "把每次听写的文本、耗时和你最终改定的文字保存到本机的 history.jsonl，供 make eval-live 使用。"
         historyMenu.addItem(keep)
-        let reveal = NSMenuItem(title: "Show History File in Finder", action: #selector(revealHistory), keyEquivalent: "")
+        let reveal = NSMenuItem(title: "在访达中显示历史文件", action: #selector(revealHistory), keyEquivalent: "")
         reveal.target = self
         historyMenu.addItem(reveal)
         historyItem.submenu = historyMenu
         menu.addItem(historyItem)
 
-        let loginItem = NSMenuItem(title: "Launch at Login", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
+        let loginItem = NSMenuItem(title: "登录时启动", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
         loginItem.target = self
         switch SMAppService.mainApp.status {
         case .enabled: loginItem.state = .on
         case .requiresApproval:
             // Registered, but the user switched it off in System Settings › General › Login Items.
             loginItem.state = .mixed
-            loginItem.title = "Launch at Login (needs approval in System Settings)"
+            loginItem.title = "登录时启动（需在系统设置中批准）"
         default: loginItem.state = .off
         }
         menu.addItem(loginItem)
 
         menu.addItem(.separator())
-        menu.addItem(NSMenuItem(title: "Quit FnVoice", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+        menu.addItem(NSMenuItem(title: "退出 FnVoice", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
     }
 
     @objc private func grantPermission(_ sender: NSMenuItem) {

@@ -50,5 +50,5 @@ For each cell, check that: ① the text arrives exactly, ② the input method is
 | System Settings › Accessibility › Reduce Motion on | capsule fades in and out, no spring or scale, bars without jitter |
 | `make build` twice, relaunch | Accessibility still granted (stable signature) |
 | Turn system Dictation off, dictate | capsule says "Turn on Dictation in System Settings › Keyboard" |
-| Menu › Launch at Login on, log out and back in | FnVoice starts; System Settings › Login Items lists it; toggling off removes it |
+| Menu › 登录时启动 on, log out and back in | FnVoice starts; System Settings › Login Items lists it; toggling off removes it |
 | SpeechTranscriber, dictate a long sentence | only the waveform while speaking; text appears in the capsule on release, before it is typed |

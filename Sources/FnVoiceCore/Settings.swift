@@ -34,9 +34,9 @@ public enum RecognitionEngine: String, CaseIterable, Sendable {
 
     public var displayName: String {
         switch self {
-        case .speechTranscriber: "SpeechTranscriber (macOS 26)"
-        case .dictationTranscriber: "DictationTranscriber (macOS 26)"
-        case .legacy: "SFSpeechRecognizer (legacy)"
+        case .speechTranscriber: "SpeechTranscriber（macOS 26）"
+        case .dictationTranscriber: "DictationTranscriber（macOS 26）"
+        case .legacy: "SFSpeechRecognizer（旧版）"
         }
     }
 
@@ -59,8 +59,8 @@ public enum RefinementScope: String, CaseIterable, Sendable {
 
     public var displayName: String {
         switch self {
-        case .all: "Refine All Dictations"
-        case .englishOnly: "Only When Text Has English (faster)"
+        case .all: "精修所有听写"
+        case .englishOnly: "仅在含英文时精修（更快）"
         }
     }
 }
