@@ -3,3 +3,5 @@ build/
 .swiftpm/
 .DS_Store
 __pycache__/
+Eval/report-live.md
+Eval/eval-live.log

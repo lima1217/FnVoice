@@ -17,7 +17,7 @@ TEST_FLAGS := $(if $(wildcard $(CLT_DEV)/Frameworks/Testing.framework),\
   -Xswiftc -F -Xswiftc $(CLT_DEV)/Frameworks -Xlinker -F -Xlinker $(CLT_DEV)/Frameworks \
   -Xlinker -rpath -Xlinker $(CLT_DEV)/Frameworks -Xlinker -rpath -Xlinker $(CLT_DEV)/usr/lib)
 
-.PHONY: all build bundle run install clean test verify smoke check hooks e2e eval eval-audio mock-llm bench icon
+.PHONY: all build bundle run install clean test verify smoke check hooks e2e eval eval-live eval-audio mock-llm bench icon
 
 all: build
 
@@ -93,6 +93,21 @@ eval: build eval-audio
 	  --env FNVOICE_LLM_MODEL="$$FNVOICE_LLM_MODEL" \
 	  "$(APP)" --args --eval "$(CURDIR)/Eval/corpus.jsonl" --out "$(CURDIR)/$(EVAL_OUT)" $(if $(ENGINE),--engine $(ENGINE))
 	@cat Eval/eval.log; echo; echo "report: $(EVAL_OUT)"
+
+# Your own dictations from history.jsonl: re-runs today's corrections + refinement on the recorded
+# recognizer text and scores it against what you left in the field. Also summarizes recorded
+# latency (p50/p90), timeouts and guardrail rejections. Via `open` so the app can read its Keychain key.
+# LIVE_ARGS e.g. "--limit 200", "--no-llm" (stats only), "--gate all"; HISTORY=path overrides the file.
+LIVE_ARGS ?=
+LIVE_OUT  ?= Eval/report-live.md
+HISTORY   ?= $(HOME)/Library/Application Support/FnVoice/history.jsonl
+eval-live: build
+	@rm -f Eval/eval-live.log
+	open -n -W --stdout "$(CURDIR)/Eval/eval-live.log" --stderr "$(CURDIR)/Eval/eval-live.log" \
+	  --env FNVOICE_LLM_BASE_URL="$$FNVOICE_LLM_BASE_URL" --env FNVOICE_LLM_API_KEY="$$FNVOICE_LLM_API_KEY" \
+	  --env FNVOICE_LLM_MODEL="$$FNVOICE_LLM_MODEL" \
+	  "$(APP)" --args --eval-live "$(HISTORY)" --out "$(CURDIR)/$(LIVE_OUT)" $(LIVE_ARGS)
+	@tail -3 Eval/eval-live.log; echo "report: $(LIVE_OUT)"
 
 # Real-time latency benchmark of the SpeechAnalyzer path. BENCH_ARGS e.g. "--retention whileInUse --no-llm".
 BENCH_ARGS ?=
