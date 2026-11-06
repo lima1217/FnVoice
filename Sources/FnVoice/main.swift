@@ -5,7 +5,9 @@ import AppKit
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let args = CommandLine.arguments
-        if args.contains("--eval") {
+        if args.contains("--eval-live") {
+            Task { @MainActor in exit(await LiveEvalRunner.run(arguments: args)) }
+        } else if args.contains("--eval") {
             Task { @MainActor in exit(await EvalRunner.run(arguments: args)) }
         } else if args.contains("--latency-bench") {
             Task { @MainActor in

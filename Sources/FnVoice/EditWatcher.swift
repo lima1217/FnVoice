@@ -18,16 +18,24 @@ import FnVoiceCore
     private var task: Task<Void, Never>?
     private var finish: (() -> Void)?
 
-    /// Starts watching; any watch already running is finalized first.
-    func watch(pasted: String, pid: Int32, onCorrections: @escaping ([Correction]) -> Void) {
+    /// Starts watching; any watch already running is finalized first. `onSettled` always runs once,
+    /// with the pasted span as the user left it, or nil if the field couldn't be read.
+    func watch(
+        pasted: String, pid: Int32, onCorrections: @escaping ([Correction]) -> Void,
+        onSettled: ((String?) -> Void)? = nil
+    ) {
         stop()
-        guard !pasted.isEmpty else { return }
+        guard !pasted.isEmpty else {
+            onSettled?(nil)
+            return
+        }
         var stable: String?
         var lastSeen: String?
         var done = false
         let finalize = {
             guard !done else { return }
             done = true
+            onSettled?(stable)
             guard let edited = stable, edited != pasted else { return }
             let found = CorrectionExtractor.extract(pasted: pasted, edited: edited)
             if !found.isEmpty { onCorrections(found) }

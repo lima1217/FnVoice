@@ -31,6 +31,9 @@ import ServiceManagement
     private var signpostState: OSSignpostIntervalState?
     /// Per-dictation timestamps for the latency log line.
     private var timing = LatencyTiming()
+    /// The dictation being recorded for history.jsonl, tagged with its session so a late result
+    /// from a cancelled dictation can't overwrite the current one.
+    private var record: (session: Int, value: DictationRecord)?
 
     private var llmConfig: LLMConfig {
         LLMConfig(baseURL: settings.llmBaseURL, apiKey: apiKey, model: settings.llmModel)
@@ -59,6 +62,10 @@ import ServiceManagement
             self.showFnHintIfNeeded()
         }
         prewarm()
+        // The last dictation's edit watch is still open at quit; finalize it so its history line is written.
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification, object: nil, queue: .main
+        ) { [weak self] _ in MainActor.assumeIsolated { self?.editWatcher.stop() } }
         Log.app.info("started; language=\(self.settings.language.rawValue, privacy: .public) engine=\(self.resolvedEngine.rawValue, privacy: .public)")
     }
 
@@ -117,9 +124,16 @@ import ServiceManagement
                 let corrections = self.loadCorrections()
                 let text = corrections.apply(heard)
                 // Pure-Chinese text was almost always right in the eval: skip the LLM round trip for it.
-                let refine = self.settings.llmEnabled && self.llmConfig.isConfigured
+                let llmOn = self.settings.llmEnabled && self.llmConfig.isConfigured
+                let refine = llmOn
                     && (RefinementGate.shouldRefine(text, scope: self.settings.refinementScope)
                         || corrections.mentionsKnownMistake(text))
+                var entry = DictationRecord(
+                    engine: self.activeEngineName, language: self.settings.language.rawValue,
+                    raw: heard, input: text, llm: refine ? .ok : (llmOn ? .skipped : .off)
+                )
+                entry.partials = self.active.partialsDuringCapture
+                self.record = (s, entry)
                 self.send(.transcriptFinal(session: s, text: text, refine: refine))
             }
 
@@ -141,6 +155,12 @@ import ServiceManagement
                 if let reason = outcome.fallbackReason {
                     Log.llm.notice("refinement fell back to raw text: \(reason, privacy: .public)")
                 }
+                if self.record?.session == s {
+                    self.record?.value.llm = DictationRecord.status(fallbackReason: outcome.fallbackReason)
+                    self.record?.value.llmReason = outcome.fallbackReason
+                    self.record?.value.model = self.settings.llmModel
+                    self.record?.value.refined = outcome.usedLLM ? outcome.text : nil
+                }
                 guard !Task.isCancelled else { return }
                 self.send(.refined(session: s, text: outcome.text))
             }
@@ -154,6 +174,9 @@ import ServiceManagement
             capsule.setText(text)
             Task { @MainActor in
                 var notice: String?
+                var entry = self.record?.session == s ? self.record?.value : nil
+                self.record = nil
+                var watching = false
                 do {
                     let report = try await self.injector.inject(text, expectedPID: self.targetPID) {
                         self.timing.pasted = .now
@@ -163,19 +186,30 @@ import ServiceManagement
                         restoredClipboard=\(report.clipboardRestored)
                         """)
                     if !report.inputSourceRestored { notice = "Couldn't restore your input method" }
-                    if self.settings.learnFromCorrections, let pid = self.targetPID {
-                        self.editWatcher.watch(pasted: text, pid: pid) { [weak self] found in self?.learn(found) }
+                    entry?.pasted = text
+                    let learning = self.settings.learnFromCorrections
+                    let keeping = self.settings.keepHistory && entry != nil
+                    if learning || keeping, let pid = self.targetPID {
+                        watching = true
+                        let timed = entry.map { self.timing.fill($0) }
+                        self.editWatcher.watch(pasted: text, pid: pid) { [weak self] found in
+                            if self?.settings.learnFromCorrections == true { self?.learn(found) }
+                        } onSettled: { [weak self] final in
+                            guard var timed else { return }
+                            timed.final = final
+                            self?.saveHistory(timed)
+                        }
                     }
                 } catch let e as InjectionError {
                     Log.inject.notice("injection refused: \(String(describing: e), privacy: .public)")
                     notice = e.userMessage
+                    entry?.injectError = String(describing: e)
                 } catch {
                     notice = error.localizedDescription
+                    entry?.injectError = error.localizedDescription
                 }
-                self.timing.log(
-                    engine: self.active is SpeechCapture ? "legacy" : self.resolvedEngine.rawValue,
-                    partials: self.active.partialsDuringCapture
-                )
+                if !watching, let entry { self.saveHistory(self.timing.fill(entry)) }
+                self.timing.log(engine: self.activeEngineName, partials: self.active.partialsDuringCapture)
                 if let state = self.signpostState {
                     Log.signposter.endInterval("release-to-inject", state)
                     self.signpostState = nil
@@ -194,6 +228,11 @@ import ServiceManagement
     static var analyzerAvailable: Bool {
         if #available(macOS 26.0, *) { return true }
         return false
+    }
+
+    /// Engine name for logs and history: the legacy fallback may stand in for the chosen engine.
+    private var activeEngineName: String {
+        active is SpeechCapture ? "legacy" : resolvedEngine.rawValue
     }
 
     private var resolvedEngine: RecognitionEngine {
@@ -222,6 +261,7 @@ import ServiceManagement
     private func startCapture(session s: Int) {
         // Whatever the user fixed in the previous dictation is learned before this one is recognized.
         editWatcher.stop()
+        record = nil
         for p in [Permission.microphone, .speechRecognition] where !Permissions.isGranted(p) {
             send(.captureFailed(session: s, message: "\(p.title) permission needed — see menu"))
             return
@@ -346,6 +386,19 @@ import ServiceManagement
     }
 
     // MARK: - Learned corrections
+
+    static var historyURL: URL {
+        vocabularyURL.deletingLastPathComponent().appendingPathComponent("history.jsonl")
+    }
+
+    private func saveHistory(_ entry: DictationRecord) {
+        guard settings.keepHistory else { return }
+        do {
+            try DictationHistory.append(entry, to: Self.historyURL)
+        } catch {
+            Log.app.notice("history write failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
 
     static var correctionsURL: URL {
         vocabularyURL.deletingLastPathComponent().appendingPathComponent("corrections.txt")
@@ -486,6 +539,19 @@ import ServiceManagement
         learnItem.submenu = learnMenu
         menu.addItem(learnItem)
 
+        let historyItem = NSMenuItem(title: "Dictation History", action: nil, keyEquivalent: "")
+        let historyMenu = NSMenu()
+        let keep = NSMenuItem(title: "Keep History", action: #selector(toggleHistory), keyEquivalent: "")
+        keep.target = self
+        keep.state = settings.keepHistory ? .on : .off
+        keep.toolTip = "Save each dictation's text, timings and your final edit to history.jsonl on this Mac, for make eval-live."
+        historyMenu.addItem(keep)
+        let reveal = NSMenuItem(title: "Show History File in Finder", action: #selector(revealHistory), keyEquivalent: "")
+        reveal.target = self
+        historyMenu.addItem(reveal)
+        historyItem.submenu = historyMenu
+        menu.addItem(historyItem)
+
         let loginItem = NSMenuItem(title: "Launch at Login", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
         loginItem.target = self
         switch SMAppService.mainApp.status {
@@ -576,6 +642,19 @@ import ServiceManagement
         if !settings.learnFromCorrections { editWatcher.stop() }
     }
 
+    @objc private func toggleHistory() {
+        settings.keepHistory.toggle()
+    }
+
+    @objc private func revealHistory() {
+        let url = Self.historyURL
+        if FileManager.default.fileExists(atPath: url.path) {
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        } else {
+            NSWorkspace.shared.open(url.deletingLastPathComponent())
+        }
+    }
+
     @objc private func editCorrections() {
         let url = Self.correctionsURL
         if !FileManager.default.fileExists(atPath: url.path) {
@@ -605,6 +684,22 @@ struct LatencyTiming {
     static func ms(_ a: ContinuousClock.Instant?, _ b: ContinuousClock.Instant?) -> String {
         guard let a, let b else { return "-" }
         return "\(Int((b - a) / .milliseconds(1)))ms"
+    }
+
+    static func ms(int a: ContinuousClock.Instant?, _ b: ContinuousClock.Instant?) -> Int? {
+        guard let a, let b else { return nil }
+        return Int((b - a) / .milliseconds(1))
+    }
+
+    /// Copies this dictation's stage times into its history record.
+    func fill(_ record: DictationRecord) -> DictationRecord {
+        var r = record
+        r.setupMs = Self.ms(int: press, ready)
+        r.asrMs = Self.ms(int: release, asrDone)
+        r.llmMs = Self.ms(int: refineStart, refineDone)
+        r.pasteMs = Self.ms(int: refineDone ?? asrDone, pasted)
+        r.totalMs = Self.ms(int: release, pasted)
+        return r
     }
 
     func log(engine: String, partials: Int) {

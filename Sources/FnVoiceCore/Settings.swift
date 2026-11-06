@@ -77,6 +77,7 @@ public final class AppSettings: @unchecked Sendable {
         static let liveText = "showLiveText"
         static let learnCorrections = "learnFromCorrections"
         static let refinementScope = "refinementScope"
+        static let keepHistory = "keepDictationHistory"
     }
 
     private let defaults: UserDefaults
@@ -127,6 +128,12 @@ public final class AppSettings: @unchecked Sendable {
     public var learnFromCorrections: Bool {
         get { defaults.object(forKey: Key.learnCorrections) as? Bool ?? true }
         set { defaults.set(newValue, forKey: Key.learnCorrections) }
+    }
+
+    /// Append every dictation (text, timings, the user's final edit) to a local history.jsonl. Default on.
+    public var keepHistory: Bool {
+        get { defaults.object(forKey: Key.keepHistory) as? Bool ?? true }
+        set { defaults.set(newValue, forKey: Key.keepHistory) }
     }
 
     public var fnHintShown: Bool {

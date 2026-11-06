@@ -23,6 +23,7 @@ To start FnVoice at login, run `make install` and enable **Launch at Login** in 
 - **Speech is recognized on your Mac.** Audio never leaves the machine and is never saved to disk. On macOS 26 the SpeechAnalyzer engines are always on-device. The legacy engine (macOS 14/15) uses on-device recognition whenever Apple provides a model for the language; otherwise Apple's recognizer falls back to its server.
 - **Only the transcribed text goes to the LLM you configure**, and only when **LLM Refinement** is enabled in the menu. Text with no English letters and no known sound-alike (such as 配森) is never sent. Nothing else goes out: no audio, clipboard contents, or app names. FnVoice sends no telemetry.
 - **Learning from edits** reads the field you dictated into, only right after a dictation, and keeps its contents in memory only. Just the corrected word pairs are written to disk, in `corrections.txt`. Turn it off in menu › Learned Corrections › Learn From My Edits.
+- **Dictation history** is on by default and stays on this Mac: each dictation appends one line to `~/Library/Application Support/FnVoice/history.jsonl` (owner-only permissions) with the recognized text, the refined and typed text, stage timings, the refinement outcome, and the typed span as you left it after editing. It feeds `make eval-live`. Turn it off in menu › Dictation History › Keep History; turning it off stops new lines but doesn't delete the file. Above 10 MB the file is moved to `history.1.jsonl`, replacing the previous one.
 - The API key is stored in the macOS Keychain. Transcripts appear in logs only at debug level and are redacted.
 
 ## Make targets
@@ -39,6 +40,7 @@ To start FnVoice at login, run `make install` and enable **Launch at Login** in 
 | `make verify` | codesign strict verify, entitlements, Info.plist lint, LSUIElement, Gatekeeper (informational) |
 | `make e2e` | real injection into InjectProbe under ABC and your first enabled CJK input method; needs Accessibility for FnVoice.app |
 | `make eval` | ASR + refinement over `Eval/corpus.jsonl`, writes `Eval/report.md` (`ENGINE=legacy\|speechTranscriber\|dictationTranscriber`, `EVAL_OUT=…`) |
+| `make eval-live` | your own dictations from `history.jsonl`: recorded p50/p90 latency, timeout and guardrail rates, and today's refinement re-run on the recorded text, scored against what you left in the field (`LIVE_ARGS="--limit 200"`, `--no-llm` for stats only); writes `Eval/report-live.md` (git-ignored) |
 | `make bench` | real-time latency benchmark of the SpeechAnalyzer path, writes `Eval/latency.md` |
 | `make icon` | regenerate `Resources/AppIcon.icns` from `Tools/make-icon.swift` |
 | `make mock-llm` | mock OpenAI-compatible server on `:8765` (key `test-key`) for trying Settings › Test |
