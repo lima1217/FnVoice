@@ -201,6 +201,9 @@ import ServiceManagement
                 self.timing.refineStart = .now
                 let outcome = await refiner.refine(text)
                 self.timing.refineDone = .now
+                if outcome.reverted > 0 {
+                    Log.llm.notice("guardrail put back \(outcome.reverted, privacy: .public) change(s) and kept the rest")
+                }
                 if let reason = outcome.fallbackReason {
                     Log.llm.notice("refinement fell back to raw text: \(reason, privacy: .public)")
                 }

@@ -5,7 +5,8 @@ import Foundation
 /// - exactly one space on both sides of an English word next to Han or Kana (`用 Python 写`);
 /// - no space between Han/Kana and plain numbers (`5分钟`, `下午3点`), matching Chinese convention;
 /// - no space between Han/Kana characters or next to full-width punctuation;
-/// - whitespace elsewhere (English–English, Korean) is kept, collapsed to one space.
+/// - whitespace elsewhere (English–English, Korean) is kept, collapsed to one space;
+/// - line breaks are kept, and so is the space in a line-leading list number (`1. 把周报写完`).
 ///
 /// SpeechTranscriber emits `用 Python写` (space before only); the legacy engine emits `用Python写`.
 /// Both end up the same.
@@ -16,6 +17,7 @@ public enum TextFormatter {
         case number(String)        // ASCII digits with . : , separators
         case fullWidthPunct(Character)
         case other(Character)      // ASCII punctuation, Hangul, everything else
+        case lineBreak             // kept as is: spoken lists come back one item per line
     }
 
     public static func format(_ text: String) -> String {
@@ -23,18 +25,27 @@ public enum TextFormatter {
         var out = ""
         for (i, seg) in segments.enumerated() {
             if i > 0 {
-                out += separator(segments[i - 1], seg, hadSpace: spaced[i])
+                out += isAfterListNumber(segments, i) && spaced[i]
+                    ? " " : separator(segments[i - 1], seg, hadSpace: spaced[i])
             }
             switch seg {
             case .han(let c), .fullWidthPunct(let c), .other(let c): out.append(c)
             case .latin(let s), .number(let s): out += s
+            case .lineBreak: out += "\n"
             }
         }
         return out
     }
 
+    /// True right after a "1." that starts a line, whose space is kept: "1. 把周报写完".
+    static func isAfterListNumber(_ segments: [Segment], _ i: Int) -> Bool {
+        guard i >= 2, segments[i - 1] == .other("."), case .number = segments[i - 2] else { return false }
+        return i == 2 || segments[i - 3] == .lineBreak
+    }
+
     static func separator(_ a: Segment, _ b: Segment, hadSpace: Bool) -> String {
         switch (a, b) {
+        case (.lineBreak, _), (_, .lineBreak): return ""
         case (.han, .latin), (.latin, .han): return " "
         case (.han, _), (_, .han): return ""
         case (.fullWidthPunct, _), (_, .fullWidthPunct): return ""
@@ -78,6 +89,9 @@ public enum TextFormatter {
                 word.append(ch)
             } else if !word.isEmpty && ch.isASCII && "._+#-':,".contains(ch) {
                 word.append(ch)
+            } else if ch.isNewline {
+                flushWord()
+                append(.lineBreak)
             } else if ch.isWhitespace {
                 flushWord()
                 pendingSpace = !segments.isEmpty
