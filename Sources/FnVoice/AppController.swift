@@ -611,6 +611,9 @@ struct LatencyTiming {
         let pasteFrom = refineDone ?? asrDone
         let line = "engine=\(engine) partials=\(partials) setup=\(Self.ms(press, ready)) asr=\(Self.ms(release, asrDone)) "
             + "llm=\(Self.ms(refineStart, refineDone)) paste=\(Self.ms(pasteFrom, pasted)) release→text=\(Self.ms(release, pasted))"
-        Log.app.info("latency \(line, privacy: .public)")
+        // Notice, not info: info lines live only in the process's memory buffer and vanish when
+        // the app is restarted (every `make install`), so `log show --last 7d` showed almost nothing.
+        // This line carries only numbers, never transcript text, so persisting it is safe.
+        Log.app.notice("latency \(line, privacy: .public)")
     }
 }

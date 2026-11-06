@@ -87,7 +87,7 @@ Fn down ─▶ arming (150 ms) ─▶ recording ─▶ Fn up ─▶ finalizing �
   - Any error, timeout, cancellation or guardrail rejection injects the raw transcript. Your words are never lost.
   - The API key is stored in the Keychain; clearing the field and saving deletes it.
 
-Logs: `log stream --predicate 'subsystem == "com.local.fnvoice"' --info`. Transcripts are logged only at debug level and redacted. Every dictation logs one line such as `latency engine=speechTranscriber partials=12 setup=0ms asr=360ms llm=1100ms paste=40ms release→text=1500ms`, and `release-to-inject` is also a signpost interval in Instruments › Points of Interest.
+Logs: `log stream --predicate 'subsystem == "com.local.fnvoice"' --info`. Transcripts are logged only at debug level and redacted. Every dictation logs one line such as `latency engine=speechTranscriber partials=12 setup=0ms asr=360ms llm=1100ms paste=40ms release→text=1500ms` at notice level, so it is kept on disk and `log show --last 7d --predicate 'subsystem == "com.local.fnvoice"' | grep latency` gives real usage statistics (`setup` includes opening the microphone, which the bench below does not measure), and `release-to-inject` is also a signpost interval in Instruments › Points of Interest.
 
 ## Latency
 
