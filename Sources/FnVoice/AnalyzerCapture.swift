@@ -238,41 +238,40 @@ struct AnalyzerModule {
 /// held (copied) so speech in the first moments after Fn-down isn't lost while the model loads.
 @available(macOS 26.0, *)
 final class AnalyzerAudioSink: @unchecked Sendable {
+    /// Where mic buffers go. `beginCapture` → `.buffering`, `attach` → `.streaming`, `detach` → `.detached`.
+    private enum Mode {
+        /// No dictation: buffers are dropped.
+        case detached
+        /// Fn is down but the analyzer isn't ready: buffers are held for it.
+        case buffering([AVAudioPCMBuffer])
+        /// Buffers are converted to the analyzer's format and fed to it.
+        case streaming(target: AVAudioFormat, continuation: AsyncStream<AnalyzerInput>.Continuation)
+    }
+
     private let lock = NSLock()
+    private var mode: Mode = .detached
     private var converter: AVAudioConverter?
-    private var target: AVAudioFormat?
-    private var continuation: AsyncStream<AnalyzerInput>.Continuation?
-    private var pending: [AVAudioPCMBuffer] = []
-    private var capturing = false
     /// ~10 s of 1024-frame buffers at 48 kHz.
     private let maxPending = 500
     let levels = LevelBox()
 
     func beginCapture() {
         lock.withLock {
-            pending = []
-            capturing = true
-            continuation = nil
-            target = nil
+            mode = .buffering([])
             converter = nil
         }
     }
 
     func attach(target: AVAudioFormat, continuation: AsyncStream<AnalyzerInput>.Continuation) {
         lock.withLock {
-            self.target = target
-            self.continuation = continuation
-            for buffer in pending { convertAndYield(buffer) }
-            pending = []
+            let held: [AVAudioPCMBuffer] = if case .buffering(let pending) = mode { pending } else { [] }
+            mode = .streaming(target: target, continuation: continuation)
+            for buffer in held { convertAndYield(buffer, target: target, continuation: continuation) }
         }
     }
 
     func detach() {
-        lock.withLock {
-            capturing = false
-            continuation = nil
-            pending = []
-        }
+        lock.withLock { mode = .detached }
         levels.set(0)
     }
 
@@ -281,17 +280,24 @@ final class AnalyzerAudioSink: @unchecked Sendable {
             levels.set(LevelMeter.level(UnsafeBufferPointer(start: channel, count: Int(buffer.frameLength))))
         }
         lock.withLock {
-            if continuation != nil {
-                convertAndYield(buffer)
-            } else if capturing, pending.count < maxPending, let copy = Self.copy(buffer) {
-                pending.append(copy) // the tap may reuse its buffer
+            switch mode {
+            case .streaming(let target, let continuation):
+                convertAndYield(buffer, target: target, continuation: continuation)
+            case .buffering(var pending):
+                guard pending.count < maxPending, let copy = Self.copy(buffer) else { return } // the tap may reuse its buffer
+                mode = .detached // drop the array's other reference so the append doesn't copy it
+                pending.append(copy)
+                mode = .buffering(pending)
+            case .detached:
+                break
             }
         }
     }
 
     /// Caller holds the lock.
-    private func convertAndYield(_ buffer: AVAudioPCMBuffer) {
-        guard let continuation, let target else { return }
+    private func convertAndYield(
+        _ buffer: AVAudioPCMBuffer, target: AVAudioFormat, continuation: AsyncStream<AnalyzerInput>.Continuation
+    ) {
         if buffer.format == target {
             continuation.yield(AnalyzerInput(buffer: buffer))
             return

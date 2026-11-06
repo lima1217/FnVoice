@@ -39,9 +39,19 @@ public struct FnKeyTracker: Sendable {
     public static let globeKeyCode: UInt16 = 179
     public static let escapeKeyCode: UInt16 = 53
 
-    public private(set) var fnHeld = false
-    private var claimed = false
+    /// The Fn key as the tracker last saw it. A held press is either claimed for dictation (a
+    /// bare press) or left to the system (a press with another modifier down).
+    private enum Fn: Equatable {
+        case released
+        case held(claimed: Bool)
+    }
+
+    private var fn: Fn = .released
+    /// An Esc key-down was swallowed; its key-up must be too, whatever dictation does meanwhile.
     private var escapeSuppressed = false
+
+    public var fnHeld: Bool { fn != .released }
+    private var claimed: Bool { fn == .held(claimed: true) }
 
     public init() {}
 
@@ -53,20 +63,19 @@ public struct FnKeyTracker: Sendable {
         switch e.kind {
         case .flagsChanged:
             if Self.isFnKey(e.keyCode) {
-                if e.fnFlag && !fnHeld {
-                    fnHeld = true
-                    claimed = !e.otherModifiers
+                switch (fn, e.fnFlag) {
+                case (.released, true):
+                    let claimed = !e.otherModifiers
+                    fn = .held(claimed: claimed)
                     return claimed ? (.suppress, .fnDown) : (.passThrough, nil)
-                }
-                if !e.fnFlag && fnHeld {
-                    fnHeld = false
-                    if claimed {
-                        claimed = false
-                        return (.suppress, .fnUp)
-                    }
+                case (.held(let claimed), false):
+                    fn = .released
+                    return claimed ? (.suppress, .fnUp) : (.passThrough, nil)
+                case (.held(let claimed), true):
+                    return (claimed ? .suppress : .passThrough, nil)
+                case (.released, false):
                     return (.passThrough, nil)
                 }
-                return (claimed ? .suppress : .passThrough, nil)
             }
             // A modifier other than Fn changed while Fn is claimed: treat as a combo (e.g. Fn+Shift).
             if claimed && e.otherModifiers { return (.passThrough, .comboKey) }
@@ -86,7 +95,7 @@ public struct FnKeyTracker: Sendable {
                 escapeSuppressed = false
                 return (.suppress, nil)
             }
-            if Self.isFnKey(e.keyCode) { return (fnHeld || claimed ? .suppress : .passThrough, nil) }
+            if Self.isFnKey(e.keyCode) { return (fnHeld ? .suppress : .passThrough, nil) }
             return (.passThrough, nil)
         }
     }
@@ -94,8 +103,7 @@ public struct FnKeyTracker: Sendable {
     /// Called when the tap was re-enabled after the system disabled it: we may have missed
     /// the Fn-up, so start clean.
     public mutating func reset() {
-        fnHeld = false
-        claimed = false
+        fn = .released
         escapeSuppressed = false
     }
 }

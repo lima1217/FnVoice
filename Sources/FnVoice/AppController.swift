@@ -160,10 +160,10 @@ import ServiceManagement
             startTask?.cancel()
             active.cancel()
 
+        case .showRefining(let text):
+            capsule.showRefining(TextFormatter.format(text))
+
         case .refine(let s, let text):
-            // Type-first dictations keep showing the text that is going out; the waiting path shows
-            // the raw transcript dimmed until the answer replaces it.
-            if machine.phase == .refining { capsule.showRefining(TextFormatter.format(text)) }
             let refiner = Refiner(
                 client: OpenAICompatibleClient(config: llmConfig), vocabulary: currentVocabulary(),
                 corrections: loadCorrections().hints()
@@ -189,10 +189,7 @@ import ServiceManagement
             refineTask?.cancel()
             refineTask = nil
             // A type-first dictation abandoned by the next Fn press: its text stays as typed.
-            if let (s, entry) = record, entry.pasted != nil {
-                record?.value.llm = .abandoned
-                settle(session: s)
-            }
+            if record?.value.pasted != nil { record?.value.llm = .abandoned }
 
         case .inject(let s, let raw):
             let text = TextFormatter.format(raw)
@@ -224,8 +221,6 @@ import ServiceManagement
                     self.signpostState = nil
                 }
                 self.send(.injected(session: s, notice: notice, typed: typed))
-                // A type-first dictation goes on to the swap; every other one is finished here.
-                if self.machine.phase == .idle || self.machine.session != s { self.settle(session: s) }
             }
 
         case .replace(let s, let refined):
@@ -250,8 +245,10 @@ import ServiceManagement
                     }
                 }
                 self.send(.replaced(session: s, notice: notice))
-                self.settle(session: s)
             }
+
+        case .settle(let s):
+            settle(session: s)
 
         case .hideCapsule:
             capsule.dismiss()
@@ -263,7 +260,8 @@ import ServiceManagement
 
     /// Ends a dictation's bookkeeping once its text is where it will stay: logs the latency line,
     /// and either watches the field for the user's edits (which also writes the history line when
-    /// the watch settles) or writes the history line now. Runs once per dictation.
+    /// the watch settles) or writes the history line now. The machine emits `.settle` once per
+    /// dictation; the guard only covers a record it never got to (nothing heard, cancelled).
     private func settle(session s: Int) {
         guard let (session, entry) = record, session == s else { return }
         record = nil

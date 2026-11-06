@@ -67,11 +67,17 @@ public enum DictationEffect: Equatable, Sendable {
     case startCapture(session: Int)
     case stopCapture(session: Int)
     case abortCapture
+    /// Show the raw transcript dimmed while the LLM is asked about it.
+    case showRefining(text: String)
     case refine(session: Int, text: String)
     case cancelRefine
     case inject(session: Int, text: String)
     /// Swap the typed raw text for `text` where it was typed, if it is still there untouched.
     case replace(session: Int, text: String)
+    /// The dictation's text is where it will stay (typed, swapped, or abandoned as typed): finish
+    /// its bookkeeping. Emitted once per dictation that typed something; never for one that was
+    /// cancelled, failed, or heard nothing.
+    case settle(session: Int)
     case hideCapsule
     /// Show a short message in the capsule, then hide it.
     case notify(String)
@@ -79,172 +85,190 @@ public enum DictationEffect: Equatable, Sendable {
 
 /// Pure reducer for the dictation lifecycle. Every async result carries the session id it was
 /// started for, so a late result from a cancelled session can never leak into a newer one.
+///
+/// Everything a phase needs to know travels in its payload (`State`), so there is no flag to reset
+/// between dictations and no combination of flags that the phase doesn't account for.
 public struct DictationMachine: Sendable {
-    public private(set) var phase: DictationPhase = .idle
+    /// How the current recording is being held.
+    private enum Hold: Equatable {
+        /// Fn is held down; releasing it stops.
+        case held
+        /// Started by a double tap; the next Fn press stops. `pressHeld` is true while the press
+        /// that locked recording is still down, so a combo key then means it was a shortcut.
+        case locked(pressHeld: Bool)
+    }
+
+    /// What happens once the current paste lands.
+    private enum AfterInject: Equatable {
+        /// The dictation ends.
+        case finish
+        /// The LLM is answering about the typed text; `pending` is an answer that arrived already.
+        case swap(pending: String?)
+    }
+
+    private enum State: Equatable {
+        case idle
+        case arming
+        case tapped
+        case recording(Hold)
+        case finalizing
+        case refining
+        case injecting(AfterInject)
+        case refiningInPlace
+        case replacing
+    }
+
+    private var state: State = .idle
     public private(set) var session = 0
-    /// Set while the current dictation types first and refines after.
-    private var inPlace = false
-    /// An LLM answer that arrived while the raw text was still being typed.
-    private var pendingRefined: String?
+
+    public var phase: DictationPhase {
+        switch state {
+        case .idle: .idle
+        case .arming: .arming
+        case .tapped: .tapped
+        case .recording: .recording
+        case .finalizing: .finalizing
+        case .refining: .refining
+        case .injecting: .injecting
+        case .refiningInPlace: .refiningInPlace
+        case .replacing: .replacing
+        }
+    }
+
     /// Recording started by a double tap: Fn-up doesn't stop it, the next Fn press does.
-    public private(set) var locked = false
-    /// The press that locked recording is still held, so a combo key means it was a shortcut.
-    private var lockingPressHeld = false
+    public var locked: Bool {
+        if case .recording(.locked) = state { return true }
+        return false
+    }
 
     /// How long after a quick Fn tap a second press still counts as a double tap.
     public static let tapWindow: Duration = .milliseconds(350)
 
     public init() {}
 
-    private mutating func reset() {
-        inPlace = false
-        pendingRefined = nil
-    }
-
     public mutating func send(_ event: DictationEvent) -> [DictationEffect] {
-        switch (phase, event) {
+        switch (state, event) {
         case (.idle, .fnDown):
-            reset()
             session += 1
-            phase = .arming
+            state = .arming
             return [.scheduleArm(session: session)]
 
         case (.arming, .fnUp):
-            phase = .tapped
+            state = .tapped
             return [.cancelArm, .scheduleTapWindow(session: session)]
 
         case (.arming, .comboKey), (.arming, .cancel):
-            phase = .idle
+            state = .idle
             return [.cancelArm]
 
+        case (.arming, .armElapsed(let s)) where s == session:
+            state = .recording(.held)
+            return [.startCapture(session: s)]
+
         case (.tapped, .fnDown):
-            reset()
             session += 1
-            phase = .recording
-            locked = true
-            lockingPressHeld = true
+            state = .recording(.locked(pressHeld: true))
             return [.cancelTapWindow, .startCapture(session: session)]
 
         case (.tapped, .tapWindowElapsed(let s)) where s == session:
-            phase = .idle
+            state = .idle
             return []
 
         case (.tapped, .cancel), (.tapped, .comboKey):
-            phase = .idle
+            state = .idle
             return [.cancelTapWindow]
 
-        case (.recording, .fnUp) where locked:
-            lockingPressHeld = false
+        case (.recording(.locked), .fnUp):
+            state = .recording(.locked(pressHeld: false))
             return []
 
-        case (.recording, .fnDown) where locked:
-            locked = false
-            phase = .finalizing
+        case (.recording(.locked), .fnDown), (.recording(.held), .fnUp):
+            state = .finalizing
             return [.stopCapture(session: session)]
 
-        case (.recording, .comboKey) where locked && lockingPressHeld:
-            locked = false
-            lockingPressHeld = false
-            phase = .idle
+        case (.recording(.locked(pressHeld: true)), .comboKey):
+            state = .idle
             return [.abortCapture, .hideCapsule]
 
         case (.recording, .finish(let s)) where s == session:
-            locked = false
-            lockingPressHeld = false
-            phase = .finalizing
+            state = .finalizing
             return [.stopCapture(session: s)]
 
-        case (.arming, .armElapsed(let s)) where s == session:
-            phase = .recording
-            return [.startCapture(session: s)]
-
-        case (.recording, .fnUp):
-            phase = .finalizing
-            return [.stopCapture(session: session)]
-
         case (.recording, .cancel), (.finalizing, .cancel):
-            locked = false
-            lockingPressHeld = false
-            phase = .idle
+            state = .idle
             return [.abortCapture, .hideCapsule]
 
         case (.recording, .captureFailed(let s, let message)) where s == session:
-            locked = false
-            lockingPressHeld = false
-            phase = .idle
+            state = .idle
             return [.abortCapture, .notify(message)]
 
         case (.finalizing, .captureFailed(let s, let message)) where s == session:
-            phase = .idle
+            state = .idle
             return [.notify(message)]
 
         case (.finalizing, .transcriptFinal(let s, let text, let plan)) where s == session:
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed.isEmpty {
-                phase = .idle
+                state = .idle
                 return [.hideCapsule]
             }
             switch plan {
             case .none:
-                phase = .injecting
+                state = .injecting(.finish)
                 return [.inject(session: s, text: trimmed)]
             case .beforeTyping:
-                phase = .refining
-                return [.refine(session: s, text: trimmed)]
+                state = .refining
+                return [.showRefining(text: trimmed), .refine(session: s, text: trimmed)]
             case .afterTyping:
-                inPlace = true
-                phase = .injecting
+                state = .injecting(.swap(pending: nil))
                 return [.refine(session: s, text: trimmed), .inject(session: s, text: trimmed)]
             }
 
         case (.refining, .refined(let s, let text)) where s == session:
-            phase = .injecting
+            state = .injecting(.finish)
             return [.inject(session: s, text: text)]
 
         case (.refining, .cancel):
-            phase = .idle
+            state = .idle
             return [.cancelRefine, .hideCapsule]
 
-        case (.injecting, .refined(let s, let text)) where s == session && inPlace:
-            pendingRefined = text
+        case (.injecting(.swap), .refined(let s, let text)) where s == session:
+            state = .injecting(.swap(pending: text))
             return []
 
-        case (.injecting, .injected(let s, let notice, let typed)) where s == session:
+        case (.injecting(let after), .injected(let s, let notice, let typed)) where s == session:
             let shown: DictationEffect = notice.map { .notify($0) } ?? .hideCapsule
-            guard inPlace else {
-                phase = .idle
+            switch after {
+            case .finish:
+                state = .idle
+                return [shown, .settle(session: s)]
+            case .swap where !typed:
+                // Nothing went out, so there is nothing to swap; the answer would be wasted.
+                state = .idle
+                return [.cancelRefine, shown, .settle(session: s)]
+            case .swap(let pending?):
+                state = .replacing
+                return [shown, .replace(session: s, text: pending)]
+            case .swap:
+                state = .refiningInPlace
                 return [shown]
             }
-            guard typed else {
-                // Nothing went out, so there is nothing to swap; the answer would be wasted.
-                phase = .idle
-                reset()
-                return [.cancelRefine, shown]
-            }
-            if let pending = pendingRefined {
-                pendingRefined = nil
-                phase = .replacing
-                return [shown, .replace(session: s, text: pending)]
-            }
-            phase = .refiningInPlace
-            return [shown]
 
         case (.refiningInPlace, .refined(let s, let text)) where s == session:
-            phase = .replacing
+            state = .replacing
             return [.replace(session: s, text: text)]
 
         case (.refiningInPlace, .fnDown):
             // The user moved on: the typed text stays as it is and a new dictation starts.
-            reset()
+            let abandoned = session
             session += 1
-            phase = .arming
-            return [.cancelRefine, .scheduleArm(session: session)]
+            state = .arming
+            return [.cancelRefine, .settle(session: abandoned), .scheduleArm(session: session)]
 
         case (.replacing, .replaced(let s, let notice)) where s == session:
-            phase = .idle
-            reset()
-            if let notice { return [.notify(notice)] }
-            return []
+            state = .idle
+            if let notice { return [.notify(notice), .settle(session: s)] }
+            return [.settle(session: s)]
 
         default:
             // Includes Fn-down while refining/injecting/replacing (ignored by design) and stale session results.

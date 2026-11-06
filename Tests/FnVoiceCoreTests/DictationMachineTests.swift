@@ -19,14 +19,15 @@ import Testing
         #expect(m.send(.fnUp) == [.stopCapture(session: 1)])
         #expect(m.phase == .finalizing)
         #expect(m.send(.transcriptFinal(session: 1, text: " 你好 ", refine: .none)) == [.inject(session: 1, text: "你好")])
-        #expect(m.send(.injected(session: 1, notice: nil)) == [.hideCapsule])
+        #expect(m.send(.injected(session: 1, notice: nil)) == [.hideCapsule, .settle(session: 1)])
         #expect(m.phase == .idle)
     }
 
     @Test func happyPathWithRefinement() {
         var (m, s) = recording()
         _ = m.send(.fnUp)
-        #expect(m.send(.transcriptFinal(session: s, text: "配森", refine: .beforeTyping)) == [.refine(session: s, text: "配森")])
+        #expect(m.send(.transcriptFinal(session: s, text: "配森", refine: .beforeTyping))
+            == [.showRefining(text: "配森"), .refine(session: s, text: "配森")])
         #expect(m.phase == .refining)
         #expect(m.send(.refined(session: s, text: "Python")) == [.inject(session: s, text: "Python")])
         #expect(m.phase == .injecting)
@@ -121,7 +122,21 @@ import Testing
         var (m, s) = recording()
         _ = m.send(.fnUp)
         _ = m.send(.transcriptFinal(session: s, text: "x", refine: .none))
-        #expect(m.send(.injected(session: s, notice: "App changed")) == [.notify("App changed")])
+        #expect(m.send(.injected(session: s, notice: "App changed")) == [.notify("App changed"), .settle(session: s)])
+    }
+
+    @Test func nothingHeardOrCancelledNeverSettles() {
+        var (m, s) = recording()
+        _ = m.send(.fnUp)
+        #expect(m.send(.transcriptFinal(session: s, text: "  ", refine: .afterTyping)) == [.hideCapsule])
+
+        (m, s) = recording()
+        _ = m.send(.fnUp)
+        _ = m.send(.transcriptFinal(session: s, text: "x", refine: .beforeTyping))
+        #expect(m.send(.cancel) == [.cancelRefine, .hideCapsule])
+
+        (m, s) = recording()
+        #expect(m.send(.captureFailed(session: s, message: "no mic")) == [.abortCapture, .notify("no mic")])
     }
 
     // MARK: - Type first, refine in place
@@ -146,7 +161,7 @@ import Testing
         #expect(m.phase == .refiningInPlace)
         #expect(m.send(.refined(session: s, text: "Python")) == [.replace(session: s, text: "Python")])
         #expect(m.phase == .replacing)
-        #expect(m.send(.replaced(session: s, notice: nil)) == [])
+        #expect(m.send(.replaced(session: s, notice: nil)) == [.settle(session: s)])
         #expect(m.phase == .idle)
     }
 
@@ -165,7 +180,8 @@ import Testing
         var (m, s) = recording()
         _ = m.send(.fnUp)
         _ = m.send(.transcriptFinal(session: s, text: "配森", refine: .afterTyping))
-        #expect(m.send(.injected(session: s, notice: "App changed", typed: false)) == [.cancelRefine, .notify("App changed")])
+        #expect(m.send(.injected(session: s, notice: "App changed", typed: false))
+            == [.cancelRefine, .notify("App changed"), .settle(session: s)])
         #expect(m.phase == .idle)
         #expect(m.send(.refined(session: s, text: "Python")) == [])
     }
@@ -182,7 +198,8 @@ import Testing
 
     @Test func fnWhileWaitingInPlaceAbandonsTheSwapAndStartsOver() {
         var (m, old) = typedInPlace()
-        #expect(m.send(.fnDown) == [.cancelRefine, .scheduleArm(session: old + 1)])
+        // The abandoned dictation settles as typed before the new one is armed.
+        #expect(m.send(.fnDown) == [.cancelRefine, .settle(session: old), .scheduleArm(session: old + 1)])
         #expect(m.phase == .arming)
         let new = m.session
         _ = m.send(.armElapsed(session: new))
@@ -200,7 +217,7 @@ import Testing
         _ = m.send(.refined(session: s, text: "Python"))
         #expect(m.send(.fnDown) == [])
         #expect(m.phase == .replacing)
-        #expect(m.send(.replaced(session: s, notice: "x")) == [.notify("x")])
+        #expect(m.send(.replaced(session: s, notice: "x")) == [.notify("x"), .settle(session: s)])
         #expect(m.phase == .idle)
     }
 
@@ -215,8 +232,42 @@ import Testing
         _ = m.send(.transcriptFinal(session: t, text: "x", refine: .beforeTyping))
         #expect(m.send(.refined(session: t, text: "y")) == [.inject(session: t, text: "y")])
         // A plain injection ends the dictation; no in-place phase is entered.
-        #expect(m.send(.injected(session: t, notice: nil)) == [.hideCapsule])
+        #expect(m.send(.injected(session: t, notice: nil)) == [.hideCapsule, .settle(session: t)])
         #expect(m.phase == .idle)
+    }
+
+    @Test func everyDictationThatTypedSettlesExactlyOnce() {
+        func settles(_ effects: [DictationEffect]) -> [Int] {
+            effects.compactMap { if case .settle(let s) = $0 { s } else { nil } }
+        }
+        // Plain, held-for-LLM, type-first swapped, type-first abandoned, and refused injection.
+        var (m, s) = recording()
+        _ = m.send(.fnUp)
+        var all = m.send(.transcriptFinal(session: s, text: "a", refine: .none))
+        all += m.send(.injected(session: s, notice: nil))
+        #expect(settles(all) == [s])
+
+        (m, s) = recording()
+        _ = m.send(.fnUp)
+        all = m.send(.transcriptFinal(session: s, text: "a", refine: .beforeTyping))
+        all += m.send(.refined(session: s, text: "b"))
+        all += m.send(.injected(session: s, notice: nil))
+        #expect(settles(all) == [s])
+
+        (m, s) = typedInPlace()
+        all = m.send(.refined(session: s, text: "b"))
+        all += m.send(.replaced(session: s, notice: nil))
+        #expect(settles(all) == [s])
+
+        (m, s) = typedInPlace()
+        all = m.send(.fnDown)
+        #expect(settles(all) == [s])
+
+        (m, s) = recording()
+        _ = m.send(.fnUp)
+        all = m.send(.transcriptFinal(session: s, text: "a", refine: .afterTyping))
+        all += m.send(.injected(session: s, notice: "refused", typed: false))
+        #expect(settles(all) == [s])
     }
 }
 
