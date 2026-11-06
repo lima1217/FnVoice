@@ -15,6 +15,7 @@ On first launch, grant what the app asks for: Microphone, Speech Recognition, an
 1. **System Settings › Keyboard › Dictation: On.** Apple's recognizer refuses to run while system Dictation is off ("Siri and Dictation are disabled").
 2. **System Settings › Keyboard › "Press 🌐 key to": Do Nothing.** FnVoice swallows the Fn event, but macOS may still show the emoji picker or switch input source. The app prompts once and keeps a menu item until it's set.
 3. Click into any text field, hold Fn, speak, release. Press **Esc** to cancel at any point before the text is typed.
+4. For long dictation, **double-tap Fn** instead: recording locks on the second press and keeps going after you let go (the capsule shows 🔒). Press Fn once more to finish, or Esc to cancel. Locked recording finalizes by itself after 10 minutes.
 
 To start FnVoice at login, run `make install` and enable **Launch at Login** in the menu. It uses `SMAppService.mainApp`, so it shows up under System Settings › General › Login Items. If you switch it off there, the menu item shows "needs approval", and clicking it opens that settings pane.
 
@@ -60,11 +61,12 @@ To create a dedicated local identity: open Keychain Access › Certificate Assis
 ```
 Fn down ─▶ arming (150 ms) ─▶ recording ─▶ Fn up ─▶ finalizing ─▶ [refining] ─▶ injecting ─▶ idle
              │ tap/combo → idle   │ Esc → idle          │ Esc → idle     │ Esc → idle
+             │ tap → tapped (350 ms) ─▶ Fn down ─▶ recording, locked ─▶ Fn down ─▶ finalizing …
 ```
 
-- **State machine** (`DictationMachine`) is a pure reducer. Every async result carries a session id, so a late result from a cancelled dictation can't leak into the next one. Fn presses during refining or injecting are ignored.
+- **State machine** (`DictationMachine`) is a pure reducer. Every async result carries a session id, so a late result from a cancelled dictation can't leak into the next one. Fn presses during refining or injecting are ignored. A quick tap opens a 350 ms window; a second press inside it starts recording immediately with `locked` set, so Fn-up is ignored and the next Fn press stops. An Fn+key combo on that locking press aborts, since it was a shortcut, not a dictation. Duration limits send `finish`, which stops locked and held recording alike.
 - **Fn key** (`FnKeyTracker` + `HotkeyMonitor`): a CGEvent tap identifies Fn by key code 63/179 on `flagsChanged`, never by the Fn flag, since arrow and F-keys carry that flag too. Only a bare Fn press is claimed and suppressed. Fn+key combos pass through untouched. If the system disables the tap after a timeout, it is re-enabled and the tracker reset.
-- **Recognition** (`AnalyzerCapture` on macOS 26 and `SpeechCapture` for legacy, behind the `LiveTranscriber` protocol). Legacy runs on-device when available, punctuation on, and `contextualStrings` seeded with ~70 tech terms plus your own (menu › Edit Vocabulary…). Capture continues 250 ms after Fn-up so the last syllable isn't clipped, then waits for `isFinal` for at most 1.5 s. Server-based sessions auto-finalize at 55 s, before Apple's ~1 min cap. Audio route changes (for example AirPods switching to HFP) rebuild the engine instead of crashing. Recognition errors are shown in the capsule; they don't vanish silently.
+- **Recognition** (`AnalyzerCapture` on macOS 26 and `SpeechCapture` for legacy, behind the `LiveTranscriber` protocol). Legacy runs on-device when available, punctuation on, and `contextualStrings` seeded with ~70 tech terms plus your own (menu › Edit Vocabulary…). Capture continues 250 ms after Fn-up so the last syllable isn't clipped, then waits for `isFinal` for at most 1.5 s. Server-based sessions auto-finalize at 55 s, before Apple's ~1 min cap; locked on-device recording at 10 minutes. Audio route changes (for example AirPods switching to HFP) rebuild the engine instead of crashing. Recognition errors are shown in the capsule; they don't vanish silently.
 - **Waveform**: RMS → dBFS, with a −50 dB noise floor and −12 dB ceiling, mapped to 0…1. Attack is 40%, release 15%, and each bar has ±4% jitter around weights [0.5, 0.8, 1.0, 0.75, 0.55]. Redrawn via display link. Reduce Motion disables jitter, spring and scale.
 - **Injection** (`TextInjector`):
   - It refuses to type while Secure Input is on, for example in a password field.

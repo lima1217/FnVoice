@@ -24,6 +24,7 @@ import ServiceManagement
     private let editWatcher = EditWatcher()
 
     private var armTask: Task<Void, Never>?
+    private var tapWindowTask: Task<Void, Never>?
     private var refineTask: Task<Void, Never>?
     private var durationLimitTask: Task<Void, Never>?
     private var tapRetryTimer: Timer?
@@ -103,6 +104,17 @@ import ServiceManagement
         case .cancelArm:
             armTask?.cancel()
             armTask = nil
+
+        case .scheduleTapWindow(let s):
+            tapWindowTask = Task { @MainActor in
+                try? await Task.sleep(for: DictationMachine.tapWindow)
+                guard !Task.isCancelled else { return }
+                self.send(.tapWindowElapsed(session: s))
+            }
+
+        case .cancelTapWindow:
+            tapWindowTask?.cancel()
+            tapWindowTask = nil
 
         case .startCapture(let s):
             startCapture(session: s)
@@ -225,6 +237,9 @@ import ServiceManagement
         }
     }
 
+    /// Locked (double-tap) recording finalizes on its own after this long.
+    static let lockedRecordingLimit: Duration = .seconds(600)
+
     static var analyzerAvailable: Bool {
         if #available(macOS 26.0, *) { return true }
         return false
@@ -270,7 +285,8 @@ import ServiceManagement
         let language = settings.language
         let vocabulary = currentVocabulary()
         active = engine
-        capsule.show(levels: engine.levels)
+        let locked = machine.locked
+        capsule.show(levels: engine.levels, locked: locked)
         startTask = Task { @MainActor in
             do {
                 do {
@@ -279,7 +295,7 @@ import ServiceManagement
                     // The SpeechAnalyzer model for this language is downloading; dictate with legacy meanwhile.
                     Log.asr.notice("analyzer model not installed for \(language.rawValue, privacy: .public); using legacy for now")
                     self.active = self.legacyEngine
-                    self.capsule.show(levels: self.legacyEngine.levels)
+                    self.capsule.show(levels: self.legacyEngine.levels, locked: locked)
                     try self.legacyEngine.start(language: language, vocabulary: vocabulary)
                 }
             } catch let e as CaptureError {
@@ -293,12 +309,14 @@ import ServiceManagement
             }
             self.timing.ready = .now
             // Server-based recognition stops at ~1 minute; finalize just before rather than losing audio.
-            if !self.active.isOnDevice {
+            // Locked recording gets a generous cap so a forgotten lock doesn't keep the mic open forever.
+            let limit: Duration? = !self.active.isOnDevice ? .seconds(55) : (locked ? Self.lockedRecordingLimit : nil)
+            if let limit {
                 self.durationLimitTask = Task { @MainActor in
-                    try? await Task.sleep(for: .seconds(55))
+                    try? await Task.sleep(for: limit)
                     guard !Task.isCancelled else { return }
-                    Log.asr.notice("approaching server recognition limit; finalizing")
-                    self.send(.fnUp)
+                    Log.asr.notice("recording limit reached; finalizing")
+                    self.send(.finish(session: s))
                 }
             }
         }
@@ -437,7 +455,7 @@ import ServiceManagement
         menu.removeAllItems()
         if !hotkeys.isInstalled { _ = hotkeys.install() }
 
-        let header = NSMenuItem(title: "Hold Fn to dictate · Esc to cancel", action: nil, keyEquivalent: "")
+        let header = NSMenuItem(title: "Hold Fn to dictate · Double-tap Fn to lock · Esc to cancel", action: nil, keyEquivalent: "")
         header.isEnabled = false
         menu.addItem(header)
 
