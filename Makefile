@@ -17,7 +17,7 @@ TEST_FLAGS := $(if $(wildcard $(CLT_DEV)/Frameworks/Testing.framework),\
   -Xswiftc -F -Xswiftc $(CLT_DEV)/Frameworks -Xlinker -F -Xlinker $(CLT_DEV)/Frameworks \
   -Xlinker -rpath -Xlinker $(CLT_DEV)/Frameworks -Xlinker -rpath -Xlinker $(CLT_DEV)/usr/lib)
 
-.PHONY: all build bundle run install clean test verify smoke check hooks e2e eval eval-live eval-audio mock-llm bench icon
+.PHONY: all build bundle run install clean test verify smoke check hooks e2e eval eval-live eval-audio mock-llm bench icon coldstart
 
 all: build
 
@@ -75,6 +75,11 @@ hooks:
 	git config core.hooksPath .githooks
 	@echo "pre-commit hook enabled: runs make check"
 
+# First Fn press after a cold start (quits the running app, idles GAP=120s, presses AFTER=5s after
+# launch). The only check that opens the mic; too slow for `make check`. Relaunch with `make run` after.
+coldstart: build
+	GAP="$(GAP)" AFTER="$(AFTER)" Tools/coldstart.sh "$(CURDIR)/$(APP)"
+
 # End-to-end injection into InjectProbe (needs Accessibility granted to FnVoice.app).
 e2e: build
 	Tools/e2e.sh "$(CURDIR)/$(APP)" "$(CURDIR)/$(PROBE)"
@@ -84,6 +89,8 @@ eval-audio:
 
 # Runs through `open` so FnVoice.app (not the terminal) owns the speech-recognition permission.
 # ENGINE=speechTranscriber|dictationTranscriber|legacy (default: the app's current choice)
+GAP      ?= 120
+AFTER    ?= 5
 ENGINE   ?=
 EVAL_OUT ?= Eval/report.md
 eval: build eval-audio

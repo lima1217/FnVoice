@@ -102,7 +102,7 @@ Logs: `log stream --predicate 'subsystem == "com.local.fnvoice"' --info`. Transc
 
 | Stage | p50 | p90 |
 |---|---|---|
-| setup, first press after launch | 0 ms (prewarmed at launch; 170 ms without) | |
+| setup, first press after launch | 0 ms analyzer (prewarmed at launch; 170 ms without) + ~2 s CoreAudio input bring-up, now paid at launch (`make coldstart` checks it) | |
 | trailing capture after Fn-up | 250 ms (fixed) | |
 | finalize, end of audio → text | 110 ms | 126 ms |
 | LLM refinement | 1098 ms | 1663 ms |

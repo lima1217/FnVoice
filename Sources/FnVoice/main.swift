@@ -18,6 +18,10 @@ import AppKit
             Task { @MainActor in exit(await InjectSelfTest.run(arguments: args)) }
         } else {
             controller.start()
+            if args.contains("--first-press") {
+                let after = argumentValue("--after", in: args).flatMap(Int.init) ?? 5
+                controller.firstPressBench(after: .seconds(after))
+            }
         }
     }
 }

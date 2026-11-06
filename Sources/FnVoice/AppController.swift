@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import FnVoiceCore
 import os
 import ServiceManagement
@@ -28,6 +29,8 @@ import ServiceManagement
     private var refineTask: Task<Void, Never>?
     private var durationLimitTask: Task<Void, Never>?
     private var tapRetryTimer: Timer?
+    /// Kept alive after `warmUpAudioInput`; see there.
+    private var audioWarmup: AVAudioEngine?
     private var targetPID: Int32?
     /// Whether the field focused at Fn-down can be read back through Accessibility, which decides
     /// between typing the raw text at once (and swapping the LLM's answer in later) and waiting.
@@ -62,6 +65,7 @@ import ServiceManagement
             for p in [Permission.microphone, .speechRecognition] where !Permissions.isGranted(p) {
                 await Permissions.request(p)
             }
+            self.warmUpAudioInput()
             if !Permissions.isGranted(.accessibility) { await Permissions.request(.accessibility) }
             self.showFnHintIfNeeded()
         }
@@ -74,6 +78,31 @@ import ServiceManagement
     }
 
     // MARK: - Hotkey → state machine
+
+    /// `--first-press [--after <seconds>]`: one synthetic Fn press and release `after` seconds
+    /// past launch, then exit 0 if the press-to-ready setup stayed under `firstPressBudget`.
+    /// `make coldstart` runs it after a cold gap; nothing in `make check` opens the mic, so this
+    /// is the only loop that sees the first-press cost (see `warmUpAudioInput`).
+    static let firstPressBudget: Duration = .milliseconds(500)
+
+    func firstPressBench(after delay: Duration) {
+        Task { @MainActor in
+            try? await Task.sleep(for: delay)
+            self.handleKey(.fnDown)
+            try? await Task.sleep(for: .milliseconds(1500))
+            self.handleKey(.fnUp)
+            try? await Task.sleep(for: .seconds(3))
+            guard let press = self.timing.press, let ready = self.timing.ready else {
+                print("FIRSTPRESS: FAIL (capture never became ready)")
+                exit(1)
+            }
+            let setup = ready - press
+            let ok = setup <= Self.firstPressBudget
+            print("first-press setup=\(Int(setup / .milliseconds(1)))ms after=\(Int(delay / .seconds(1)))s")
+            print(ok ? "FIRSTPRESS: PASS" : "FIRSTPRESS: FAIL (budget \(Self.firstPressBudget))")
+            exit(ok ? 0 : 1)
+        }
+    }
 
     private func handleKey(_ action: KeyAction) {
         switch action {
@@ -206,6 +235,7 @@ import ServiceManagement
                         restoredClipboard=\(report.clipboardRestored)
                         """)
                     if !report.inputSourceRestored { notice = "Couldn't restore your input method" }
+                    self.timing.injectDone = .now
                     typed = true
                     if self.record?.session == s { self.record?.value.pasted = text }
                 } catch let e as InjectionError {
@@ -297,6 +327,24 @@ import ServiceManagement
 
     private var resolvedEngine: RecognitionEngine {
         RecognitionEngine.resolve(stored: settings.recognitionEngine, analyzerAvailable: Self.analyzerAvailable)
+    }
+
+    /// The first `AVAudioEngine.inputNode` access in a process brings up CoreAudio's input path:
+    /// 1.9–2.4 s measured cold, under 60 ms for every access after it for the rest of the process,
+    /// whichever engine instance asks. That cost sat on the first Fn press after launch (the
+    /// `setup=2100ms` lines) and nothing else, since `make bench`/`make smoke` feed files and
+    /// never open the mic. Pay it here, off the main thread, as soon as the mic permission is in
+    /// (without it the access would prompt). The engine stays alive so the warm path does too.
+    private func warmUpAudioInput() {
+        guard audioWarmup == nil, Permissions.isGranted(.microphone) else { return }
+        let engine = AVAudioEngine()
+        audioWarmup = engine
+        nonisolated(unsafe) let warm = engine // touched only here, never started
+        Task.detached(priority: .utility) {
+            let t = ContinuousClock.now
+            _ = warm.inputNode
+            Log.audio.info("audio input warmed in \(Int((ContinuousClock.now - t) / .milliseconds(1)))ms")
+        }
     }
 
     /// Loads the current engine's model in the background so the first Fn press is fast.
@@ -628,6 +676,7 @@ import ServiceManagement
         Task { @MainActor in
             await Permissions.request(p)
             if p == .accessibility { self.installTapOrRetry() }
+            if p == .microphone { self.warmUpAudioInput() }
         }
     }
 
@@ -719,9 +768,11 @@ import ServiceManagement
 }
 
 /// Timestamps of one dictation. Logged as one line, e.g.
-/// `latency engine=speechTranscriber partials=12 setup=120ms asr=310ms llm=640ms paste=95ms release→text=1045ms replace=-`.
+/// `latency engine=speechTranscriber partials=12 setup=120ms asr=310ms llm=640ms paste=95ms release→text=1045ms cleanup=305ms replace=-`.
 /// For a type-first dictation `paste` and `release→text` run from the recognizer, not the LLM,
-/// and `replace` is LLM answer → swapped in.
+/// and `replace` is LLM answer → swapped in. `cleanup` is the injector's housekeeping after the
+/// text appeared (input source switched back, clipboard restored); nothing the user waits for,
+/// but it gates the capsule's dismissal and the edit watch.
 struct LatencyTiming {
     var press: ContinuousClock.Instant?
     var ready: ContinuousClock.Instant?
@@ -730,6 +781,8 @@ struct LatencyTiming {
     var refineStart: ContinuousClock.Instant?
     var refineDone: ContinuousClock.Instant?
     var pasted: ContinuousClock.Instant?
+    /// The injector returned: input source and clipboard are back as they were.
+    var injectDone: ContinuousClock.Instant?
     var replaced: ContinuousClock.Instant?
     /// The raw text was typed before the LLM answered.
     var typedFirst = false
@@ -762,7 +815,7 @@ struct LatencyTiming {
     func log(engine: String, partials: Int) {
         let line = "engine=\(engine) partials=\(partials) setup=\(Self.ms(press, ready)) asr=\(Self.ms(release, asrDone)) "
             + "llm=\(Self.ms(refineStart, refineDone)) paste=\(Self.ms(pasteFrom, pasted)) release→text=\(Self.ms(release, pasted)) "
-            + "replace=\(Self.ms(refineDone, replaced))"
+            + "cleanup=\(Self.ms(pasted, injectDone)) replace=\(Self.ms(refineDone, replaced))"
         // Notice, not info: info lines live only in the process's memory buffer and vanish when
         // the app is restarted (every `make install`), so `log show --last 7d` showed almost nothing.
         // This line carries only numbers, never transcript text, so persisting it is safe.
