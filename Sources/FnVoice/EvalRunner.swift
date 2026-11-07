@@ -100,7 +100,7 @@ import Speech
                     print("[\(c.id)] skipped by gate")
                 } else if let refiner {
                     let started = ContinuousClock.now
-                    let outcome = await refiner.refine(c.reference)
+                    let outcome = await refiner.refine(c.reference, context: c.refinementContext)
                     row.llmMs = Int((ContinuousClock.now - started) / .milliseconds(1))
                     row.refined = outcome.text
                     row.note = outcome.evalNote
@@ -116,7 +116,7 @@ import Speech
                     row.note = "LLM skipped by gate"
                 } else if let refiner {
                     let started = ContinuousClock.now
-                    let outcome = await refiner.refine(input)
+                    let outcome = await refiner.refine(input, context: c.refinementContext)
                     row.llmMs = Int((ContinuousClock.now - started) / .milliseconds(1))
                     row.refined = outcome.text
                     row.note = outcome.evalNote

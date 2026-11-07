@@ -49,7 +49,8 @@ import FnVoiceCore
                 let input = corrections.apply(record.raw)
                 if RefinementGate.shouldRefine(input, scope: scope) || corrections.mentionsKnownMistake(input) {
                     let started = ContinuousClock.now
-                    let outcome = await refiner.refine(input)
+                    let outcome = await refiner.refine(
+                        input, context: RefinementContext(app: record.appName, before: record.context))
                     row.rerunMs = Int((ContinuousClock.now - started) / .milliseconds(1))
                     row.rerun = TextFormatter.format(outcome.text)
                     row.rerunLLM = DictationRecord.status(fallbackReason: outcome.fallbackReason)

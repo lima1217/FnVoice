@@ -35,6 +35,8 @@ import ServiceManagement
     /// Whether the field focused at Fn-down can be read back through Accessibility, which decides
     /// between typing the raw text at once (and swapping the LLM's answer in later) and waiting.
     private var targetReadable = false
+    /// The target app's name and the text before the caret, read at Fn-down and given to the LLM.
+    private var targetContext = RefinementContext()
     private var signpostState: OSSignpostIntervalState?
     /// Per-dictation timestamps for the latency log line.
     private var timing = LatencyTiming()
@@ -178,6 +180,8 @@ import ServiceManagement
                 entry.partials = self.active.partialsDuringCapture
                 entry.app = self.targetPID.flatMap { NSRunningApplication(processIdentifier: $0)?.bundleIdentifier }
                 entry.fieldReadable = self.targetReadable
+                entry.appName = self.targetContext.app
+                entry.context = self.targetContext.before
                 self.record = (s, entry)
                 // Type first when the answer can be swapped in later; otherwise the user waits for it.
                 let plan: RefinementPlan = !refine ? .none : (self.targetReadable ? .afterTyping : .beforeTyping)
@@ -198,9 +202,10 @@ import ServiceManagement
                 client: OpenAICompatibleClient(config: llmConfig), vocabulary: currentVocabulary(),
                 corrections: loadCorrections().hints()
             )
+            let context = targetContext
             refineTask = Task { @MainActor in
                 self.timing.refineStart = .now
-                let outcome = await refiner.refine(text)
+                let outcome = await refiner.refine(text, context: context)
                 self.timing.refineDone = .now
                 if outcome.reverted > 0 {
                     Log.llm.notice("guardrail put back \(outcome.reverted, privacy: .public) change(s) and kept the rest")
@@ -378,8 +383,13 @@ import ServiceManagement
         }
         timing = LatencyTiming(press: .now)
         // Decided now, while the field the user is dictating into still has focus.
-        targetReadable = targetPID.map(EditWatcher.canReadFocusedField) ?? false
-        Log.app.debug("target field readable: \(self.targetReadable)")
+        let field = targetPID.map(EditWatcher.readFocusedField)
+        targetReadable = field?.readable ?? false
+        targetContext = RefinementContext(
+            app: targetPID.flatMap { NSRunningApplication(processIdentifier: $0)?.localizedName },
+            before: field?.before
+        )
+        Log.app.debug("target field readable: \(self.targetReadable), context: \(self.targetContext.before?.count ?? 0) chars")
         let engine = transcriber(for: resolvedEngine)
         let language = settings.language
         let vocabulary = currentVocabulary()
