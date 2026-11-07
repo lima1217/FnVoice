@@ -50,6 +50,10 @@ public enum CorrectionExtractor {
         let changed = hunks.reduce(0) { $0 + max($1.a.count, $1.b.count) }
         if Double(changed) / Double(a.count) > maxChangedShare { return [] }
 
+        // A rule is applied to formatted text (`CorrectionStore.apply`), and `join` can't always
+        // rebuild the original spacing ("a, b" comes back "a,b"): keep only pairs that match the
+        // text as it was typed, or the rule could never fire.
+        let typed = TextFormatter.format(pasted)
         var out: [Correction] = []
         for h in hunks {
             guard !h.a.isEmpty, !h.b.isEmpty, h.a.count <= maxSpan, h.b.count <= maxSpan else { continue }
@@ -58,7 +62,7 @@ public enum CorrectionExtractor {
             guard removed.contains(where: isWordToken) || added.contains(where: isWordToken) else { continue }
             guard let (ra, rb) = widened(h, a, b) else { continue }
             let c = Correction(wrong: join(Array(a[ra])), right: join(Array(b[rb])))
-            if c.wrong != c.right && !out.contains(c) { out.append(c) }
+            if c.wrong != c.right && typed.contains(c.wrong) && !out.contains(c) { out.append(c) }
         }
         return out
     }
@@ -125,7 +129,7 @@ public struct CorrectionStore: Equatable, Sendable {
     @discardableResult
     public mutating func record(_ corrections: [Correction]) -> [Correction] {
         var promoted: [Correction] = []
-        for c in corrections {
+        for c in corrections where Self.isStorable(c) {
             let reverse = Correction(wrong: c.right, right: c.wrong)
             if let i = entries.firstIndex(where: { $0.correction == reverse }) {
                 entries[i].count -= 1
@@ -142,6 +146,15 @@ public struct CorrectionStore: Equatable, Sendable {
         }
         entries.sort { $0.count > $1.count }
         return promoted
+    }
+
+    /// Whether `c` survives a trip through the file: `parse` splits on → and tabs, reads one line
+    /// per entry and trims each side, so anything else would be dropped at the next `learn`.
+    static func isStorable(_ c: Correction) -> Bool {
+        [c.wrong, c.right].allSatisfy { side in
+            !side.isEmpty && side == side.trimmingCharacters(in: .whitespaces)
+                && !side.contains("→") && !side.contains(where: { $0 == "\t" || $0.isNewline })
+        } && c.wrong != c.right
     }
 
     // MARK: Using

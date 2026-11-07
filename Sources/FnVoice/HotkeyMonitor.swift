@@ -48,9 +48,8 @@ import FnVoiceCore
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             Log.hotkey.notice("event tap disabled by system (\(type.rawValue, privacy: .public)); re-enabling")
             if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
-            tracker.reset()
-            // We may have missed Fn-up while disabled; treat it as released.
-            emit(.fnUp)
+            let fnDown = CGEventSource.flagsState(.combinedSessionState).contains(.maskSecondaryFn)
+            if let action = tracker.resync(fnPhysicallyDown: fnDown) { emit(action) }
             return false
         }
         guard let input else { return false }

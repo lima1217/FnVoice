@@ -80,14 +80,6 @@ public struct DictationRecord: Codable, Equatable, Sendable {
         self.llm = llm
     }
 
-    /// Maps a refinement fallback reason (see `Refiner.refine`) onto a status.
-    public static func status(fallbackReason: String?) -> LLM {
-        guard let reason = fallbackReason else { return .ok }
-        if reason.hasPrefix("guardrail") { return .guardrail }
-        if reason == LLMError.timeout.userMessage { return .timeout }
-        return .error
-    }
-
     /// The text as FnVoice left it in the field: the swapped-in answer, else what was typed.
     public var typed: String? { replaced ?? pasted }
 

@@ -21,7 +21,11 @@ import ServiceManagement
     )
     private var statusItem: NSStatusItem!
     private var settingsWindow: SettingsWindowController?
-    private var apiKey = Keychain.readAPIKey()
+    private var apiKey = ""
+    /// The Keychain refused the key (prompt denied or dismissed). The key is optional, so the LLM
+    /// would otherwise just get 401s quietly; the menu offers a retry instead. Not retried during
+    /// a dictation: the password prompt blocks the main thread, and with it the Fn event tap.
+    private var apiKeyReadError: String?
     private let editWatcher = EditWatcher()
 
     private var armTask: Task<Void, Never>?
@@ -48,7 +52,21 @@ import ServiceManagement
         LLMConfig(baseURL: settings.llmBaseURL, apiKey: apiKey, model: settings.llmModel)
     }
 
+    private func loadAPIKey() {
+        do {
+            apiKey = try Keychain.loadAPIKey()
+            apiKeyReadError = nil
+        } catch let e as Keychain.KeychainError {
+            apiKey = ""
+            apiKeyReadError = e.message
+            Log.app.notice("API key not readable from the Keychain: \(e.message, privacy: .public)")
+        } catch {
+            apiKeyReadError = error.localizedDescription
+        }
+    }
+
     func start() {
+        loadAPIKey()
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         updateIcon(recording: false)
         let menu = NSMenu()
@@ -205,6 +223,9 @@ import ServiceManagement
             refineTask = Task { @MainActor in
                 self.timing.refineStart = .now
                 let outcome = await refiner.refine(text, app: app)
+                // Cancelled: the dictation was abandoned or aborted and its timing is no longer the
+                // current one (`timing` has no session tag), so leave it and the record alone.
+                guard !Task.isCancelled else { return }
                 self.timing.refineDone = .now
                 if outcome.reverted > 0 {
                     Log.llm.notice("guardrail put back \(outcome.reverted, privacy: .public) change(s) and kept the rest")
@@ -213,13 +234,12 @@ import ServiceManagement
                     Log.llm.notice("refinement fell back to raw text: \(reason, privacy: .public)")
                 }
                 if self.record?.session == s {
-                    self.record?.value.llm = DictationRecord.status(fallbackReason: outcome.fallbackReason)
+                    self.record?.value.llm = outcome.status
                     self.record?.value.llmReason = outcome.fallbackReason
                     self.record?.value.model = self.settings.llmModel
                     self.record?.value.refined = outcome.usedLLM ? outcome.text : nil
                     self.record?.value.rejected = outcome.rejected
                 }
-                guard !Task.isCancelled else { return }
                 self.send(.refined(session: s, text: outcome.text))
             }
 
@@ -396,6 +416,8 @@ import ServiceManagement
                 do {
                     try await engine.start(language: language, vocabulary: vocabulary)
                 } catch CaptureError.modelDownloading {
+                    // Aborted meanwhile: a newer dictation may own `active` by now.
+                    guard !Task.isCancelled else { return }
                     // The SpeechAnalyzer model for this language is downloading; dictate with legacy meanwhile.
                     Log.asr.notice("analyzer model not installed for \(language.rawValue, privacy: .public); using legacy for now")
                     self.active = self.legacyEngine
@@ -411,6 +433,9 @@ import ServiceManagement
                 self.send(.captureFailed(session: s, message: error.localizedDescription))
                 return
             }
+            // An aborted start can still return normally (the engine just drops the stale session);
+            // `timing` and `durationLimitTask` belong to whatever dictation is current now.
+            guard !Task.isCancelled else { return }
             self.timing.ready = .now
             // Server-based recognition stops at ~1 minute; finalize just before rather than losing audio.
             // Locked recording gets a generous cap so a forgotten lock doesn't keep the mic open forever.
@@ -573,6 +598,14 @@ import ServiceManagement
             }
         }
 
+        if let error = apiKeyReadError {
+            menu.addItem(.separator())
+            let item = menuItem("无法从钥匙串读取 API Key，点此重试…", action: #selector(retryAPIKey))
+            item.image = Self.symbol("exclamationmark.triangle.fill", color: .systemOrange)
+            item.toolTip = error
+            menu.addItem(item)
+        }
+
         // Dictation
         menu.addItem(.separator())
         let languageMenu = NSMenu()
@@ -720,6 +753,11 @@ import ServiceManagement
         Log.app.info("recognition engine → \(engine.rawValue, privacy: .public)")
     }
 
+    @objc private func retryAPIKey() {
+        loadAPIKey()
+        if apiKeyReadError != nil { capsule.flash("仍无法读取 API Key") }
+    }
+
     @objc private func toggleLLM() {
         settings.llmEnabled.toggle()
         if settings.llmEnabled && !llmConfig.isConfigured { openSettings() }
@@ -734,7 +772,7 @@ import ServiceManagement
     @objc private func openSettings() {
         if settingsWindow == nil {
             settingsWindow = SettingsWindowController(settings: settings) { [weak self] in
-                self?.apiKey = Keychain.readAPIKey()
+                self?.loadAPIKey()
             }
         }
         settingsWindow?.present()

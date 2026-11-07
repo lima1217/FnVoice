@@ -100,10 +100,15 @@ public struct FnKeyTracker: Sendable {
         }
     }
 
-    /// Called when the tap was re-enabled after the system disabled it: we may have missed
-    /// the Fn-up, so start clean.
-    public mutating func reset() {
-        fn = .released
+    /// Called when the tap was re-enabled after the system disabled it (the main thread was busy
+    /// too long, e.g. an Accessibility call into a hung app). Events may have been missed, so sync
+    /// with the key as it physically is: if Fn is still down, the user is still dictating and
+    /// nothing changes; if it was released meanwhile, report the Fn-up that was missed.
+    public mutating func resync(fnPhysicallyDown: Bool) -> KeyAction? {
         escapeSuppressed = false
+        guard !fnPhysicallyDown else { return nil }
+        let wasClaimed = claimed
+        fn = .released
+        return wasClaimed ? .fnUp : nil
     }
 }

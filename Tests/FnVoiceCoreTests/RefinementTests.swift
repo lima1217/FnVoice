@@ -34,8 +34,42 @@ struct StubClient: LLMClient {
     }
 }
 
+/// Deterministic generator so a failing property case reproduces.
+struct SplitMix: RandomNumberGenerator {
+    var state: UInt64
+    init(seed: UInt64) { state = seed }
+    mutating func next() -> UInt64 {
+        state &+= 0x9E37_79B9_7F4A_7C15
+        var z = state
+        z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
+        z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
+        return z ^ (z >> 31)
+    }
+}
+
 @Suite struct EditGuardTests {
     let guardrail = EditGuard()
+
+    /// `review` splices by these positions; it relies on every hunk changing something and on
+    /// neighbouring hunks being separated by an equal token on both sides.
+    @Test func alignedHunksAreSeparated() {
+        var rng = SplitMix(seed: 42)
+        let alphabet = ["我", "们", "用", "Python", "，", "嗯", "写", "代", "码"]
+        for _ in 0..<2000 {
+            let a = (0..<Int.random(in: 0...8, using: &rng)).map { _ in alphabet.randomElement(using: &rng)! }
+            let b = (0..<Int.random(in: 0...8, using: &rng)).map { _ in alphabet.randomElement(using: &rng)! }
+            let hunks = EditGuard.alignedHunks(a, b)
+            for h in hunks {
+                #expect(!h.a.isEmpty || !h.b.isEmpty)
+                // Whatever precedes a hunk is matched tokens, so it is empty on both sides or neither.
+                #expect((h.a.lowerBound == 0) == (h.b.lowerBound == 0), "a=\(a) b=\(b)")
+            }
+            for (x, y) in zip(hunks, hunks.dropFirst()) {
+                #expect(y.a.lowerBound > x.a.upperBound && y.b.lowerBound > x.b.upperBound, "a=\(a) b=\(b)")
+            }
+            _ = guardrail.review(original: a.joined(), candidate: b.joined()) // must not trap
+        }
+    }
 
     @Test func tokenizesLatinRunsAsOneToken() {
         #expect(EditGuard.tokens("我用Python写JSON") == ["我", "用", "Python", "写", "JSON"])
@@ -208,7 +242,7 @@ struct StubClient: LLMClient {
     @Test func fallsBackOnLLMError() async {
         let r = Refiner(client: StubClient { throw LLMError.timeout })
         let out = await r.refine("原文")
-        #expect(out == RefineOutcome(text: "原文", usedLLM: false, fallbackReason: "Timed out"))
+        #expect(out == RefineOutcome(text: "原文", usedLLM: false, fallbackReason: "Timed out", status: .timeout))
     }
 
     @Test func fallsBackOnCancellation() async {

@@ -178,6 +178,7 @@ final class MockLLMServer: Sendable {
         #expect(out.text == raw)
         #expect(!out.usedLLM)
         #expect(out.fallbackReason?.hasPrefix("guardrail") == true)
+        #expect(out.status == .guardrail)
     }
 
     @Test func refinerFallsBackOnTimeoutMalformedAndAuth() async {

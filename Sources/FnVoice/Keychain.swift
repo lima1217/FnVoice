@@ -14,13 +14,26 @@ enum Keychain {
     }
 
     static func readAPIKey() -> String {
+        (try? loadAPIKey()) ?? ""
+    }
+
+    /// The stored key, "" when none is stored. Throws when one may exist but couldn't be read:
+    /// with the self-signed build, each rebuild asks for the login password, and a denied or
+    /// dismissed prompt lands here.
+    static func loadAPIKey() throws -> String {
         var query = baseQuery
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         var out: AnyObject?
-        guard SecItemCopyMatching(query as CFDictionary, &out) == errSecSuccess,
-              let data = out as? Data else { return "" }
+        let status = SecItemCopyMatching(query as CFDictionary, &out)
+        if status == errSecItemNotFound { return "" }
+        guard status == errSecSuccess, let data = out as? Data else { throw KeychainError(status: status) }
         return String(decoding: data, as: UTF8.self)
+    }
+
+    struct KeychainError: Error {
+        let status: OSStatus
+        var message: String { (SecCopyErrorMessageString(status, nil) as String?) ?? "OSStatus \(status)" }
     }
 
     @discardableResult

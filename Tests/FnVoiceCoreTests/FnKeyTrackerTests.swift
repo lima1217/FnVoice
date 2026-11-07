@@ -67,11 +67,24 @@ import Testing
         #expect(t.handle(a, dictationCancellable: true) == (.passThrough, nil))
     }
 
-    @Test func resetForgetsHeldFn() {
+    @Test func resyncReportsAMissedFnUp() {
         var t = FnKeyTracker()
         _ = t.handle(fnDown, dictationCancellable: false)
-        t.reset()
+        #expect(t.resync(fnPhysicallyDown: false) == .fnUp)
         #expect(!t.fnHeld)
         #expect(t.handle(fnDown, dictationCancellable: false) == (.suppress, .fnDown))
+    }
+
+    @Test func resyncKeepsAStillHeldFn() {
+        // The tap was disabled mid-dictation but Fn is still down: recording must go on.
+        var t = FnKeyTracker()
+        _ = t.handle(fnDown, dictationCancellable: false)
+        #expect(t.resync(fnPhysicallyDown: true) == nil)
+        #expect(t.fnHeld)
+    }
+
+    @Test func resyncWithoutAClaimedPressReportsNothing() {
+        var t = FnKeyTracker()
+        #expect(t.resync(fnPhysicallyDown: false) == nil)
     }
 }

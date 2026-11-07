@@ -70,13 +70,6 @@ import Testing
         #expect(DictationHistory.parse(DictationHistory.encode(r)!).first?.rejected == "我来试一下")
     }
 
-    @Test func mapsFallbackReasons() {
-        #expect(DictationRecord.status(fallbackReason: nil) == .ok)
-        #expect(DictationRecord.status(fallbackReason: "guardrail: too many edits") == .guardrail)
-        #expect(DictationRecord.status(fallbackReason: LLMError.timeout.userMessage) == .timeout)
-        #expect(DictationRecord.status(fallbackReason: "HTTP 500") == .error)
-    }
-
     @Test func whitespaceOnlyChangesAreNotEdits() {
         #expect(!record(raw: "", pasted: "用 Python 写", final: "用Python写").userEdited)
         #expect(record(raw: "", pasted: "写带码", final: "写代码").userEdited)

@@ -5,6 +5,9 @@ APP          := $(BUILD_DIR)/$(APP_NAME).app
 PROBE        := $(BUILD_DIR)/InjectProbe.app
 INSTALL_DIR  ?= /Applications
 ENTITLEMENTS := Resources/FnVoice.entitlements
+# SIGTERM makes the app quit normally (it writes its last history line), which takes a moment:
+# wait up to 3 s for it to exit before replacing or relaunching it.
+QUIT_APP     := pkill -x $(APP_NAME) 2>/dev/null; for i in $$(seq 30); do pgrep -x $(APP_NAME) >/dev/null || break; sleep 0.1; done
 
 # Override with SIGN_IDENTITY="My Cert". Empty → ad-hoc (permissions reset on every rebuild).
 SIGN_IDENTITY ?= $(shell Tools/find-identity.sh)
@@ -36,11 +39,11 @@ bundle:
 	Tools/bundle.sh "$(PROBE)" "$$BIN_DIR/InjectProbe" Resources/InjectProbe-Info.plist "$(SIGN)"
 
 run: build
-	-@pkill -x $(APP_NAME) 2>/dev/null; sleep 0.3
+	-@$(QUIT_APP)
 	open "$(APP)"
 
 install: build
-	-@pkill -x $(APP_NAME) 2>/dev/null; sleep 0.3
+	-@$(QUIT_APP)
 	rm -rf "$(INSTALL_DIR)/$(APP_NAME).app"
 	ditto "$(APP)" "$(INSTALL_DIR)/$(APP_NAME).app"
 	@echo "installed to $(INSTALL_DIR)/$(APP_NAME).app"

@@ -109,6 +109,24 @@ import Testing
         #expect(CorrectionStore.parse("# c\n\n带码 → 代码\n坏行\n").entries.map(\.count) == [1])
     }
 
+    @Test func neverStoresWhatTheFileCantReadBack() {
+        var store = CorrectionStore()
+        store.record([
+            Correction(wrong: "A→B", right: "AB"), Correction(wrong: "第一行\n第二行", right: "一行"),
+            Correction(wrong: "x\ty", right: "xy"), Correction(wrong: " 带码", right: "代码"), fix,
+        ])
+        #expect(store.entries.map(\.correction) == [fix])
+        #expect(CorrectionStore.parse(store.serialized()) == store)
+    }
+
+    @Test func dropsPairsThatCantMatchTheTypedText() {
+        // "a, b" rebuilt from tokens reads "a,b", which is nowhere in what was typed.
+        let pasted = "今天我们用 foo, bar 做一个小测试吧"
+        let found = CorrectionExtractor.extract(pasted: pasted, edited: "今天我们用 foobar 做一个小测试吧")
+        #expect(!found.contains { $0.wrong == "foo,bar" })
+        #expect(found.allSatisfy { pasted.contains($0.wrong) })
+    }
+
     @Test func vocabularyAndHints() {
         var store = CorrectionStore()
         store.record([fix, Correction(wrong: "杰森", right: "JSON")])

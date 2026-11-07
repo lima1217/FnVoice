@@ -52,7 +52,7 @@ import FnVoiceCore
                     let outcome = await refiner.refine(input, app: record.appName)
                     row.rerunMs = Int((ContinuousClock.now - started) / .milliseconds(1))
                     row.rerun = TextFormatter.format(outcome.text)
-                    row.rerunLLM = DictationRecord.status(fallbackReason: outcome.fallbackReason)
+                    row.rerunLLM = outcome.status
                     row.rerunReason = outcome.fallbackReason
                 } else {
                     row.rerun = TextFormatter.format(input)

@@ -465,7 +465,10 @@ public struct EditGuard: Sendable {
         for h in putBack.reversed() {
             let removed: Range<Int>
             var restored: [Piece]
-            if h.b.isEmpty, h.b.lowerBound > 0 {
+            // `h.a.lowerBound > 0` follows from `h.b.lowerBound > 0` (hunks are separated by an equal
+            // token, tested in `alignedHunksAreSeparated`); checked anyway, since a wrong index here
+            // would crash the app on an LLM answer.
+            if h.b.isEmpty, h.b.lowerBound > 0, h.a.lowerBound > 0 {
                 // A dropped span: put it back right after the word before it, with the punctuation
                 // that preceded it, so the candidate's own punctuation still closes the sentence.
                 let at = cb[h.b.lowerBound - 1] + 1
@@ -521,6 +524,9 @@ public struct RefineOutcome: Equatable, Sendable {
     public var rejected: String? = nil
     /// Changes the guard put back from the original while keeping the rest of the answer.
     public var reverted = 0
+    /// How the refinement ended, as history and eval-live count it. Set by `Refiner` beside
+    /// `fallbackReason`, so rewording a reason can't move it to another bucket.
+    public var status: DictationRecord.LLM = .ok
 }
 
 /// LLM refinement that can only ever make things better or leave them alone: every failure
@@ -551,17 +557,18 @@ public struct Refiner: Sendable {
             let cleaned = OutputSanitizer.clean(output, original: raw)
             let review = editGuard.review(original: raw, candidate: cleaned)
             if let reason = review.rejection {
-                return RefineOutcome(text: raw, usedLLM: false, fallbackReason: "guardrail: \(reason)", rejected: cleaned)
+                return RefineOutcome(
+                    text: raw, usedLLM: false, fallbackReason: "guardrail: \(reason)", rejected: cleaned, status: .guardrail)
             }
             return RefineOutcome(
                 text: review.text, usedLLM: true, fallbackReason: nil,
                 rejected: review.reverted > 0 ? cleaned : nil, reverted: review.reverted)
         } catch let e as LLMError {
-            return RefineOutcome(text: raw, usedLLM: false, fallbackReason: e.userMessage)
+            return RefineOutcome(text: raw, usedLLM: false, fallbackReason: e.userMessage, status: e == .timeout ? .timeout : .error)
         } catch is CancellationError {
-            return RefineOutcome(text: raw, usedLLM: false, fallbackReason: "cancelled")
+            return RefineOutcome(text: raw, usedLLM: false, fallbackReason: "cancelled", status: .error)
         } catch {
-            return RefineOutcome(text: raw, usedLLM: false, fallbackReason: error.localizedDescription)
+            return RefineOutcome(text: raw, usedLLM: false, fallbackReason: error.localizedDescription, status: .error)
         }
     }
 }
