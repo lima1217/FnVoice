@@ -55,6 +55,12 @@ public struct DictationRecord: Codable, Equatable, Sendable {
     /// LLM answer → swapped in, for type-first dictations.
     public var replaceMs: Int?
     public var partials: Int?
+    /// Bundle id of the app that was frontmost at Fn-down (where the text went). Field behaviour
+    /// differs by app: Chromium/Electron fields, for one, apply AX selections asynchronously.
+    public var app: String?
+    /// Whether the focused field was readable at Fn-down, i.e. whether the dictation typed first
+    /// and could swap the LLM answer in later.
+    public var fieldReadable: Bool?
 
     public init(
         id: String = UUID().uuidString, time: Date = Date(), engine: String, language: String,
@@ -85,6 +91,22 @@ public struct DictationRecord: Codable, Equatable, Sendable {
         guard let final, let typed else { return false }
         return final.filter { !$0.isWhitespace } != typed.filter { !$0.isWhitespace }
     }
+}
+
+/// Per target app: dictations, readable fields, swaps done and missed, and the commonest miss
+/// reason. Empty when no record carries an app (history written before the field existed).
+func appTable(_ records: [DictationRecord]) -> String {
+    let byApp = Dictionary(grouping: records.filter { $0.app != nil }, by: { $0.app! })
+    guard !byApp.isEmpty else { return "" }
+    var out = "\n| app | dictations | field readable | swapped in | swap missed | top miss reason |\n|---|---|---|---|---|---|\n"
+    for (app, rs) in byApp.sorted(by: { $0.value.count > $1.value.count }) {
+        let readable = rs.filter { $0.fieldReadable == true }.count
+        let swapped = rs.filter { $0.replaced != nil }.count
+        let misses = rs.compactMap(\.replaceError)
+        let top = Dictionary(grouping: misses, by: { $0 }).max { $0.value.count < $1.value.count }
+        out += "| \(app) | \(rs.count) | \(readable) | \(swapped) | \(misses.count) | \(top.map { "\($0.key) (\($0.value.count))" } ?? "-") |\n"
+    }
+    return out
 }
 
 /// Append-only JSONL file of `DictationRecord`s, one object per line.
@@ -205,6 +227,7 @@ public enum LiveEval {
         if swapped + missed > 0 {
             out += "LLM answers swapped in after typing: \(swapped); changed answers that could not be swapped in: \(missed).\n"
         }
+        out += appTable(records)
         out += "\n"
 
         // Accuracy against the user's final text.

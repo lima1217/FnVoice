@@ -29,6 +29,33 @@ import Testing
         #expect(perms == 0o600)
     }
 
+    @Test func groupsSwapOutcomesByTargetApp() {
+        func at(_ app: String?, replaced: String? = nil, missed: String? = nil) -> DictationRecord {
+            var r = record(raw: "a", pasted: "a", final: nil)
+            r.app = app
+            r.fieldReadable = app != nil
+            r.replaced = replaced
+            r.replaceError = missed
+            return r
+        }
+        let table = appTable([
+            at("com.google.Chrome", missed: "skipped: selection not accepted"),
+            at("com.google.Chrome", missed: "skipped: selection not accepted"),
+            at("com.google.Chrome", missed: "skipped: text moved"),
+            at("com.apple.Notes", replaced: "b"),
+            at(nil),
+        ])
+        #expect(table.contains("| com.google.Chrome | 3 | 3 | 0 | 3 | skipped: selection not accepted (2) |"))
+        #expect(table.contains("| com.apple.Notes | 1 | 1 | 1 | 0 | - |"))
+        #expect(appTable([at(nil)]).isEmpty)
+
+        var r = at("com.google.Chrome")
+        r.fieldReadable = false
+        let back = DictationHistory.parse(DictationHistory.encode(r)!)
+        #expect(back.first?.app == "com.google.Chrome")
+        #expect(back.first?.fieldReadable == false)
+    }
+
     @Test func mapsFallbackReasons() {
         #expect(DictationRecord.status(fallbackReason: nil) == .ok)
         #expect(DictationRecord.status(fallbackReason: "guardrail: too many edits") == .guardrail)

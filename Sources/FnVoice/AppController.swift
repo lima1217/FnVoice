@@ -176,6 +176,8 @@ import ServiceManagement
                     raw: heard, input: text, llm: refine ? .ok : (llmOn ? .skipped : .off)
                 )
                 entry.partials = self.active.partialsDuringCapture
+                entry.app = self.targetPID.flatMap { NSRunningApplication(processIdentifier: $0)?.bundleIdentifier }
+                entry.fieldReadable = self.targetReadable
                 self.record = (s, entry)
                 // Type first when the answer can be swapped in later; otherwise the user waits for it.
                 let plan: RefinementPlan = !refine ? .none : (self.targetReadable ? .afterTyping : .beforeTyping)

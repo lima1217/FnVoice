@@ -17,7 +17,7 @@ TEST_FLAGS := $(if $(wildcard $(CLT_DEV)/Frameworks/Testing.framework),\
   -Xswiftc -F -Xswiftc $(CLT_DEV)/Frameworks -Xlinker -F -Xlinker $(CLT_DEV)/Frameworks \
   -Xlinker -rpath -Xlinker $(CLT_DEV)/Frameworks -Xlinker -rpath -Xlinker $(CLT_DEV)/usr/lib)
 
-.PHONY: all build bundle run install clean test verify smoke check hooks e2e eval eval-live eval-audio mock-llm bench icon coldstart
+.PHONY: all build bundle run install clean test verify smoke check hooks e2e eval eval-live eval-audio mock-llm bench icon coldstart ax-probe
 
 all: build
 
@@ -27,21 +27,13 @@ build:
 	@$(MAKE) --no-print-directory bundle
 
 bundle:
-	@BIN_DIR="$$(swift build -c $(CONFIG) --show-bin-path)"; \
-	rm -rf "$(APP)" "$(PROBE)"; \
-	mkdir -p "$(APP)/Contents/MacOS" "$(APP)/Contents/Resources" "$(PROBE)/Contents/MacOS"; \
-	cp Resources/AppIcon.icns "$(APP)/Contents/Resources/AppIcon.icns"; \
-	cp "$$BIN_DIR/$(APP_NAME)" "$(APP)/Contents/MacOS/$(APP_NAME)"; \
-	cp Resources/Info.plist "$(APP)/Contents/Info.plist"; \
-	cp "$$BIN_DIR/InjectProbe" "$(PROBE)/Contents/MacOS/InjectProbe"; \
-	cp Resources/InjectProbe-Info.plist "$(PROBE)/Contents/Info.plist"
 	@if [ "$(SIGN)" = "-" ]; then \
 	  echo "warning: no code-signing identity found; signing ad-hoc."; \
 	  echo "         Accessibility/Input Monitoring grants will reset on every rebuild. See README › Signing."; \
-	else echo "signing with: $(SIGN)"; fi
-	codesign --force --options runtime --timestamp=none --entitlements $(ENTITLEMENTS) --sign "$(SIGN)" "$(APP)"
-	codesign --force --timestamp=none --sign "$(SIGN)" "$(PROBE)"
-	@echo "built $(APP)"
+	fi
+	@BIN_DIR="$$(swift build -c $(CONFIG) --show-bin-path)"; \
+	Tools/bundle.sh "$(APP)" "$$BIN_DIR/$(APP_NAME)" Resources/Info.plist "$(SIGN)" $(ENTITLEMENTS) Resources/AppIcon.icns && \
+	Tools/bundle.sh "$(PROBE)" "$$BIN_DIR/InjectProbe" Resources/InjectProbe-Info.plist "$(SIGN)"
 
 run: build
 	-@pkill -x $(APP_NAME) 2>/dev/null; sleep 0.3
@@ -83,6 +75,13 @@ coldstart: build
 # End-to-end injection into InjectProbe (needs Accessibility granted to FnVoice.app).
 e2e: build
 	Tools/e2e.sh "$(CURDIR)/$(APP)" "$(CURDIR)/$(PROBE)"
+
+# Would the in-place swap work in a field? Default: an isolated Chrome textarea + contenteditable.
+# TARGET=Name probes a running app's focused field; DELAY=5 probes whatever is frontmost after 5 s.
+TARGET ?=
+DELAY  ?=
+ax-probe: build
+	@APP="$(TARGET)" DELAY="$(DELAY)" Tools/ax-probe.sh "$(CURDIR)/$(APP)"
 
 eval-audio:
 	Tools/make-eval-audio.sh Eval/corpus.jsonl

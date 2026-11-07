@@ -1,7 +1,10 @@
 import AppKit
 
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate {
-    private let controller = AppController()
+    /// Created only for a normal launch: its init reads the API key from the Keychain, and with a
+    /// self-signed build every rebuild is a new app to the Keychain, so each read in a test mode
+    /// (probe, e2e, smoke) would ask for the login password.
+    private var controller: AppController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let args = CommandLine.arguments
@@ -14,9 +17,13 @@ import AppKit
                 guard #available(macOS 26.0, *) else { exit(64) }
                 exit(await LatencyBench.run(arguments: args))
             }
+        } else if args.contains("--ax-probe") {
+            Task { @MainActor in exit(await AXProbe.run(arguments: args)) }
         } else if args.contains("--selftest-inject") {
             Task { @MainActor in exit(await InjectSelfTest.run(arguments: args)) }
         } else {
+            let controller = AppController()
+            self.controller = controller
             controller.start()
             if args.contains("--first-press") {
                 let after = argumentValue("--after", in: args).flatMap(Int.init) ?? 5

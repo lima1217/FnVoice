@@ -38,7 +38,10 @@ import Speech
         let vocabulary = Vocabulary.merged(user: [])
 
         let settings = AppSettings()
-        let config = LLMConfig(baseURL: settings.llmBaseURL, apiKey: Keychain.readAPIKey(), model: settings.llmModel)
+        // `--no-llm` (the smoke test) skips the Keychain read, which prompts after every rebuild.
+        let wantsLLM = !args.contains("--no-llm") || args.contains("--llm-probe")
+        let config = LLMConfig(
+            baseURL: settings.llmBaseURL, apiKey: wantsLLM ? Keychain.readAPIKey() : "", model: settings.llmModel)
         let refiner = config.isConfigured && !args.contains("--no-llm")
             ? Refiner(client: OpenAICompatibleClient(config: config), vocabulary: vocabulary) : nil
 
