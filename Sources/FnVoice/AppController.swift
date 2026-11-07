@@ -54,7 +54,6 @@ import ServiceManagement
         statusItem.menu = menu
 
         installEditMenu()
-        legacyEngine.onPartial = { [weak self] text in self?.capsule.setText(TextFormatter.format(text)) }
         hotkeys.isCancellable = { [weak self] in self?.machine.phase.isCancellable ?? false }
         hotkeys.onAction = { [weak self] action in self?.handleKey(action) }
         installTapOrRetry()
@@ -189,8 +188,8 @@ import ServiceManagement
             startTask?.cancel()
             active.cancel()
 
-        case .showRefining(let text):
-            capsule.showRefining(TextFormatter.format(text))
+        case .showRefining:
+            capsule.showRefining()
 
         case .refine(let s, let text):
             let refiner = Refiner(
@@ -225,7 +224,6 @@ import ServiceManagement
 
         case .inject(let s, let raw):
             let text = TextFormatter.format(raw)
-            capsule.setText(text)
             Task { @MainActor in
                 var notice: String?
                 var typed = false
@@ -363,7 +361,6 @@ import ServiceManagement
         if let existing = analyzerEngines[engine] { return existing }
         guard #available(macOS 26.0, *) else { return legacyEngine }
         let created = AnalyzerCapture(engine: engine)
-        created.onPartial = { [weak self] text in self?.capsule.setText(TextFormatter.format(text)) }
         analyzerEngines[engine] = created
         return created
     }
