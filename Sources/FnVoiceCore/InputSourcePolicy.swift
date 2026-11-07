@@ -47,6 +47,19 @@ public enum InputSourcePolicy {
         return false
     }
 
+    /// Apple's Chinese input methods pass ⌘V straight through, so pasting needs no switch (`make e2e`
+    /// checks the paste lands under Shuangpin). Switching away and back costs something real: the
+    /// method comes back in its English mode, and the user has to press Shift to type Chinese again.
+    static let pastesThroughIDPrefixes = [
+        "com.apple.inputmethod.SCIM",
+        "com.apple.inputmethod.TCIM",
+    ]
+
+    /// Whether to switch to an ASCII layout for the paste: CJK methods that might swallow ⌘V.
+    public static func needsASCIISwitch(_ source: InputSourceInfo) -> Bool {
+        isCJK(source) && !pastesThroughIDPrefixes.contains { source.id.hasPrefix($0) }
+    }
+
     /// The ASCII layout to switch to before pasting: ABC, then US, then any ASCII-capable layout.
     public static func asciiTarget(from candidates: [InputSourceInfo]) -> InputSourceInfo? {
         let usable = candidates.filter { $0.isKeyboardLayout && $0.isASCIICapable && $0.isSelectable }

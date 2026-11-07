@@ -113,7 +113,7 @@ public typealias Sleeper = @Sendable (Duration) async -> Void
 
         let original = inputSources.current()
         var switched = false
-        if let original, InputSourcePolicy.isCJK(original),
+        if let original, InputSourcePolicy.needsASCIISwitch(original),
            let target = InputSourcePolicy.asciiTarget(from: inputSources.available()),
            inputSources.select(id: target.id) {
             switched = true

@@ -77,7 +77,7 @@ Fn tap ─▶ tapped (350 ms) ─▶ Fn down ─▶ recording, locked (Fn up ign
   - It refuses to type while Secure Input is on, for example in a password field.
   - If the app you started in is no longer frontmost (say, during a slow LLM call), it copies the text to the clipboard instead of typing it into the wrong window.
   - Otherwise it snapshots every pasteboard item and type, then writes the text marked `org.nspasteboard.TransientType`/`ConcealedType`.
-  - For CJK input methods it switches to ABC/US, waits until the switch has actually taken effect, sends ⌘V using the "v" key in the current layout, then switches back and verifies.
+  - Apple's own Chinese input methods (Pinyin, Shuangpin, Zhuyin…) take ⌘V as is, so it pastes without switching: switching away and back would leave them in English mode. For other CJK input methods it switches to ABC/US, waits until the switch has actually taken effect, sends ⌘V using the "v" key in the current layout, then switches back and verifies.
   - The clipboard is restored 300 ms later, but only if nothing else was copied in the meantime.
 - **Spacing** (`TextFormatter`): every injected text gets one space on both sides of an English word next to Chinese or Japanese (`用 Python 写`). Numbers stay attached (`5分钟`), there is no space next to full-width punctuation, and English and Korean spacing is left alone. Line breaks are kept, and so is the space after a line-leading list number (`1. 把周报写完`). Only whitespace changes, never characters.
 - **Learning from your edits** (`EditWatcher`, `CorrectionExtractor`, `CorrectionStore`; menu › 自动纠错):

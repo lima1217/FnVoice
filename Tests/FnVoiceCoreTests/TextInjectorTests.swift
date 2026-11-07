@@ -87,6 +87,7 @@ import Testing
 
 let abc = InputSourceInfo(id: "com.apple.keylayout.ABC", isKeyboardLayout: true, languages: ["en"], isASCIICapable: true)
 let pinyin = InputSourceInfo(id: "com.apple.inputmethod.SCIM.ITABC", isKeyboardLayout: false, languages: ["zh-Hans"], isASCIICapable: true)
+let sogou = InputSourceInfo(id: "com.sogou.inputmethod.sogou.pinyin", isKeyboardLayout: false, languages: ["en"], isASCIICapable: true)
 
 @MainActor struct Rig {
     let journal = Journal()
@@ -105,7 +106,7 @@ let pinyin = InputSourceInfo(id: "com.apple.inputmethod.SCIM.ITABC", isKeyboardL
 
     init(current: String) {
         pasteboard = FakePasteboard(journal: journal, items: original)
-        inputs = FakeInputSources(journal: journal, current: current, all: [abc, pinyin])
+        inputs = FakeInputSources(journal: journal, current: current, all: [abc, pinyin, sogou])
         poster = FakePoster(journal: journal, pasteboard: pasteboard, inputs: inputs)
         injector = TextInjector(pasteboard: pasteboard, inputSources: inputs, poster: poster, system: probe, sleep: { _ in })
     }
@@ -120,12 +121,21 @@ let pinyin = InputSourceInfo(id: "com.apple.inputmethod.SCIM.ITABC", isKeyboardL
     }
 
     @Test func cjkSourceSwitchesToABCBeforePasteAndRestoresAfter() async throws {
+        let rig = Rig(current: sogou.id)
+        let report = try await rig.injector.inject("你好 Python", expectedPID: 100)
+        #expect(rig.journal.entries == ["writeTransient", "select:\(abc.id)", "paste", "select:\(sogou.id)", "restoreClipboard"])
+        #expect(rig.poster.sourceAtPaste == abc.id)
+        #expect(rig.inputs.currentID == sogou.id)
+        #expect(report.switchedInputSource && report.inputSourceRestored)
+    }
+
+    /// Switching away and back leaves Apple's Chinese methods in English mode; they take ⌘V as is.
+    @Test func appleChineseMethodPastesWithoutSwitching() async throws {
         let rig = Rig(current: pinyin.id)
         let report = try await rig.injector.inject("你好 Python", expectedPID: 100)
-        #expect(rig.journal.entries == ["writeTransient", "select:\(abc.id)", "paste", "select:\(pinyin.id)", "restoreClipboard"])
-        #expect(rig.poster.sourceAtPaste == abc.id)
-        #expect(rig.inputs.currentID == pinyin.id)
-        #expect(report.switchedInputSource && report.inputSourceRestored)
+        #expect(rig.journal.entries == ["writeTransient", "paste", "restoreClipboard"])
+        #expect(rig.poster.sourceAtPaste == pinyin.id)
+        #expect(!report.switchedInputSource && report.inputSourceRestored)
     }
 
     @Test func clipboardRestoredWithEveryItemAndType() async throws {
@@ -163,16 +173,16 @@ let pinyin = InputSourceInfo(id: "com.apple.inputmethod.SCIM.ITABC", isKeyboardL
     }
 
     @Test func switchThatNeverTakesEffectStillPastesAndRestoresAfterTimeout() async throws {
-        let rig = Rig(current: pinyin.id)
+        let rig = Rig(current: sogou.id)
         rig.inputs.stuck = [abc.id]
         let report = try await rig.injector.inject("x", expectedPID: 100)
         #expect(rig.journal.entries.contains("paste"))
-        #expect(report.inputSourceRestored) // never left pinyin, so "restored" holds
+        #expect(report.inputSourceRestored) // never left sogou, so "restored" holds
     }
 
     @Test func failedRestoreIsReported() async throws {
-        let rig = Rig(current: pinyin.id)
-        rig.inputs.stuck = [pinyin.id] // can switch away, can't switch back
+        let rig = Rig(current: sogou.id)
+        rig.inputs.stuck = [sogou.id] // can switch away, can't switch back
         let report = try await rig.injector.inject("x", expectedPID: 100)
         #expect(report.switchedInputSource)
         #expect(!report.inputSourceRestored)
@@ -219,6 +229,15 @@ let pinyin = InputSourceInfo(id: "com.apple.inputmethod.SCIM.ITABC", isKeyboardL
         #expect(InputSourcePolicy.isCJK(method("im.rime.inputmethod.Squirrel.Hans", [])))
         // Unknown IME with a CJK language.
         #expect(InputSourcePolicy.isCJK(method("com.example.ime", ["zh-Hans"])))
+    }
+
+    @Test func onlyMethodsThatMightSwallowPasteNeedASCIISwitch() {
+        #expect(!InputSourcePolicy.needsASCIISwitch(abc))
+        #expect(!InputSourcePolicy.needsASCIISwitch(pinyin))
+        #expect(!InputSourcePolicy.needsASCIISwitch(method("com.apple.inputmethod.SCIM.Shuangpin", ["zh-Hans"])))
+        #expect(!InputSourcePolicy.needsASCIISwitch(method("com.apple.inputmethod.TCIM.Zhuyin", ["zh-Hant"])))
+        #expect(InputSourcePolicy.needsASCIISwitch(sogou))
+        #expect(InputSourcePolicy.needsASCIISwitch(method("com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese", ["ja"])))
     }
 
     @Test func keyboardLayoutsAndOtherMethodsAreNotCJK() {
