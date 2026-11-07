@@ -125,6 +125,17 @@ struct StubClient: LLMClient {
         #expect(guardrail.rejection(original: raw, candidate: cleaned) == nil)
     }
 
+    // The diff may pair the 是 of 应该是 with an earlier 是 (报价是), so the deleted span arrives as
+    // 是十二万不对应该 rather than 十二万不对应该是. Both delete the same words; neither may be put back.
+    @Test(arguments: [
+        ("报价是十二万不对应该是十五万含税", "报价是十五万含税"),
+        ("截止日期是周三不对应该是周五", "截止日期是周五"),
+        ("帮我回复一下王总报价是十二万不对应该是十五万含税有效期一个月", "帮我回复一下王总，报价是十五万含税，有效期一个月。"),
+    ])
+    func correctionWhoseMarkerEndsLikeTheWordBeforeItIsKept(raw: String, cleaned: String) {
+        #expect(guardrail.review(original: raw, candidate: cleaned).text == cleaned)
+    }
+
     @Test(arguments: [
         // 不对 is content here: nothing follows it, so dropping the sentence is not a correction.
         ("今天我们要讨论的那个方案不对", "今天我们要讨论的"),

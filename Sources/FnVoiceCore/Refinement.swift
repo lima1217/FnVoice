@@ -295,7 +295,33 @@ public struct EditGuard: Sendable {
     /// True when deleting `deleted` (with `before`/`after` the original tokens around it) only
     /// removes disfluency: fillers, a stutter, or an abandoned self-correction. `candidate` is the
     /// whole cleaned text, joined without punctuation.
+    ///
+    /// A deletion next to a token equal to its own edge can be aligned more than one way: in
+    /// 报价是|十二万不对应该是|十五万 the diff may delete 是十二万不对应该 instead, pairing the 是 of
+    /// 应该是 with the one in 报价是. Both remove the same words, so each such slide is tried too.
     static func isDisfluency(
+        _ deleted: [String], before: ArraySlice<String>, after: ArraySlice<String>, candidate: String,
+        splitByPunctuation: Bool = false
+    ) -> Bool {
+        func check(_ d: [String], _ b: [String], _ a: [String]) -> Bool {
+            isDisfluencyAsAligned(d, before: b[...], after: a[...], candidate: candidate, splitByPunctuation: splitByPunctuation)
+        }
+        let d = deleted, b = Array(before), a = Array(after)
+        if check(d, b, a) { return true }
+        var k = 1
+        while k <= d.count, k <= a.count, d[k - 1] == a[k - 1] {
+            if check(Array(d[k...] + a[..<k]), b + d[..<k], Array(a[k...])) { return true }
+            k += 1
+        }
+        k = 1
+        while k <= d.count, k <= b.count, d[d.count - k] == b[b.count - k] {
+            if check(Array(b[(b.count - k)...] + d[..<(d.count - k)]), Array(b[..<(b.count - k)]), d[(d.count - k)...] + a) { return true }
+            k += 1
+        }
+        return false
+    }
+
+    static func isDisfluencyAsAligned(
         _ deleted: [String], before: ArraySlice<String>, after: ArraySlice<String>, candidate: String,
         splitByPunctuation: Bool = false
     ) -> Bool {
