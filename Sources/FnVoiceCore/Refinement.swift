@@ -11,12 +11,15 @@ public enum RefinementPrompt {
     1. Fix words the recognizer got wrong. Recognition errors look like this:
        - an English term written as garbled English: "pie torch"→PyTorch, "web pack"→webpack, "next JS"→Next.js;
        - an English term written as Chinese characters that sound like it, sometimes forming real but out-of-place words: 派托奇→PyTorch, 瑞迪斯→Redis, 多克哈布→Docker Hub. The surrounding words usually give it away (镜像, 容器, 配置文件, 对象, 接口, 仓库...);
-       - a Chinese word replaced by a homophone or near-homophone that doesn't fit the sentence: 单原测试→单元测试, 周未→周末, 意建→意见, 在说一遍→再说一遍, 帐户余额不足→账户余额不足, 我门→我们.
+       - an English term heard as a run of other English words: "get ignore"→.gitignore, "cherry peak"→cherry-pick;
+       - a Chinese word replaced by a homophone or near-homophone that doesn't fit the sentence: 单原测试→单元测试, 周未→周末, 意建→意见, 在说一遍→再说一遍, 帐户余额不足→账户余额不足, 我门→我们. This includes small function words: "发这个按钮改成蓝色"→"把这个按钮改成蓝色", where the sentence needs 把.
+       Work from what the speaker meant. A word that is meaningless, or a real word that makes no sense where it stands (代码已经迫使到远程了), is almost always a recognition error: say it aloud and ask which word sounds like it and makes the sentence make sense. Very often it is an English term or command the speaker said in English (push, merge, rebase, deploy, a file or product name), and the words around it tell you which.
+       When the intended word is an English term, write the English term, never a Chinese translation of it: "代码已经迫使到远程了"→"代码已经push到远程了", not 推送到. A Chinese word that already makes sense (提交, 部署, 推送) is what the speaker said: keep it.
        Fix a word when the sentence clearly reads wrong as written and one intended word clearly fits better.
 
-    2. Delete filler sounds and verbal tics: 嗯, 啊, 呃, 额, 唔, 哦, 呐, and 那个, 就是, 然后, 这个 when they only fill a pause and carry no meaning. Keep them when they mean something: before a noun they point at a thing (那个文件, 把那个bug修掉, 这个方案), and 就是他, 然后再部署 are content.
+    2. Delete filler sounds and verbal tics: 嗯, 啊, 呃, 额, 唔, 哦, 呐, and 那个, 就是说, 就是, 然后, 这个 when they only fill a pause and carry no meaning. Keep them when they mean something: before a noun they point at a thing (那个文件, 把那个bug修掉, 这个方案), and 就是他, 然后再部署 are content.
 
-    3. Resolve self-corrections. When the speaker says something, then takes it back with a phrase like 不对, 不是, 我是说, 应该是, 说错了, 哦不, 改成, keep only the final version: delete the abandoned words and the correction phrase. Also delete stutters and accidental repeats (我我我觉得→我觉得), but keep reduplicated words, which are ordinary Chinese: 看看, 试试, 想想, 谢谢, 天天.
+    3. Resolve self-corrections. When the speaker says something, then takes it back with a phrase like 不对, 不是, 我是说, 应该是, 说错了, 哦不, 改成, keep only the final version: delete the abandoned words and the correction phrase. Also delete stutters and accidental repeats (我我我觉得→我觉得), including a syllable echoed after a pause, which the recognizer may split off with a full stop: "我觉得。得这个方案可以"→"我觉得这个方案可以". Delete the echo; never complete it into a new word. Keep reduplicated words, which are ordinary Chinese: 看看, 试试, 想想, 谢谢, 天天.
        "周三，不对，周四开会"→"周四开会". "发给张三，哦不，发给李四"→"发给李四".
        When the correction replaces only part of what was said, swap in just that part and keep the rest: "我们用Redis做缓存，不对，应该是Memcached"→"我们用Memcached做缓存".
        Only when it is clearly a correction of what was just said. "这个方案不对" and "不是我做的" are content: keep them.
