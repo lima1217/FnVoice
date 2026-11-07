@@ -213,6 +213,7 @@ import ServiceManagement
                     self.record?.value.llmReason = outcome.fallbackReason
                     self.record?.value.model = self.settings.llmModel
                     self.record?.value.refined = outcome.usedLLM ? outcome.text : nil
+                    self.record?.value.rejected = outcome.rejected
                 }
                 guard !Task.isCancelled else { return }
                 self.send(.refined(session: s, text: outcome.text))

@@ -39,6 +39,9 @@ public struct DictationRecord: Codable, Equatable, Sendable {
     /// nil when injection was refused (e.g. Secure Input); see `injectError`.
     public var pasted: String?
     public var injectError: String?
+    /// What the LLM wrote when the edit guard rejected it, or put part of it back. Kept so rejected
+    /// answers can be read later; `refined` holds only what was accepted.
+    public var rejected: String?
     /// Text swapped in for `pasted` once the LLM answered (type-first dictations only).
     public var replaced: String?
     /// Why a changed answer was not swapped in: "skipped: text moved", "skipped: app changed", or an injection error.
@@ -86,9 +89,15 @@ public struct DictationRecord: Codable, Equatable, Sendable {
     /// The text as FnVoice left it in the field: the swapped-in answer, else what was typed.
     public var typed: String? { replaced ?? pasted }
 
+    /// `final`, unless only whitespace is left: chat fields clear to an empty line once the message
+    /// is sent, which says nothing about what the user wanted typed.
+    public var observedFinal: String? {
+        final.flatMap { $0.allSatisfy(\.isWhitespace) ? nil : $0 }
+    }
+
     /// True when the user changed the text FnVoice left (whitespace-only changes don't count).
     public var userEdited: Bool {
-        guard let final, let typed else { return false }
+        guard let final = observedFinal, let typed else { return false }
         return final.filter { !$0.isWhitespace } != typed.filter { !$0.isWhitespace }
     }
 }
@@ -217,7 +226,7 @@ public enum LiveEval {
             let share = [.skipped, .off].contains(status) || sent == 0 ? "" : pct(Double(n) / Double(sent))
             out += "| \(status.rawValue) | \(n) | \(share) |\n"
         }
-        let observed = records.filter { $0.final != nil }
+        let observed = records.filter { $0.observedFinal != nil }
         let edited = observed.filter(\.userEdited)
         let refused = records.filter { $0.pasted == nil }.count
         out += "\nFinal text observed for \(observed.count) of \(records.count); the user edited \(edited.count) of those. "
@@ -231,13 +240,13 @@ public enum LiveEval {
         out += "\n"
 
         // Accuracy against the user's final text.
-        let scored = rows.filter { $0.record.final != nil }
+        let scored = rows.filter { $0.record.observedFinal != nil }
         out += "## Accuracy against your final text (\(scored.count) dictations)\n\n"
         guard !scored.isEmpty else {
             return out + "No dictation has an observed final text yet (needs Accessibility and a readable field).\n"
         }
         func meanCER(_ hyp: (Row) -> String?) -> (Double, Int)? {
-            let pairs = scored.compactMap { r in hyp(r).map { (r.record.final!, $0) } }
+            let pairs = scored.compactMap { r in hyp(r).map { (r.record.observedFinal!, $0) } }
             guard !pairs.isEmpty else { return nil }
             let total = pairs.map { ErrorRate.cer(reference: $0.0, hypothesis: $0.1) }.reduce(0, +)
             return (total / Double(pairs.count), pairs.count)
@@ -253,13 +262,13 @@ public enum LiveEval {
                 out += "| \(name) | - | - | 0 |\n"
                 continue
             }
-            let exact = scored.filter { r in hyp(r).map { same($0, r.record.final!) } ?? false }.count
+            let exact = scored.filter { r in hyp(r).map { same($0, r.record.observedFinal!) } ?? false }.count
             out += "| \(name) | \(pct(cer)) | \(exact)/\(n) | \(n) |\n"
         }
 
         let rerun = scored.filter { $0.rerun != nil }
-        let regressions = rerun.filter { same($0.shipped, $0.record.final!) && !same($0.rerun!, $0.record.final!) }
-        let fixes = rerun.filter { !same($0.shipped, $0.record.final!) && same($0.rerun!, $0.record.final!) }
+        let regressions = rerun.filter { same($0.shipped, $0.record.observedFinal!) && !same($0.rerun!, $0.record.observedFinal!) }
+        let fixes = rerun.filter { !same($0.shipped, $0.record.observedFinal!) && same($0.rerun!, $0.record.observedFinal!) }
         out += "\nAgainst what was typed back then, the current pipeline newly gets \(fixes.count) right "
             + "and newly gets \(regressions.count) wrong.\n"
 
@@ -280,13 +289,13 @@ public enum LiveEval {
             let f = ISO8601DateFormatter()
             for r in rs {
                 out += "| \(f.string(from: r.record.time)) | \(cell(r.record.raw)) | \(cell(r.shipped)) | "
-                    + "\(cell(r.rerun ?? "-"))\(r.rerunReason.map { " (\($0))" } ?? "") | \(cell(r.record.final!)) |\n"
+                    + "\(cell(r.rerun ?? "-"))\(r.rerunReason.map { " (\($0))" } ?? "") | \(cell(r.record.observedFinal!)) |\n"
             }
         }
         list("Regressions (typed right back then, wrong now)", regressions)
         list("Fixes (typed wrong back then, right now)", fixes)
         let regressed = Set(regressions.map(\.record.id))
-        list("Still wrong after the re-run", rerun.filter { !same($0.rerun!, $0.record.final!) && !regressed.contains($0.record.id) })
+        list("Still wrong after the re-run", rerun.filter { !same($0.rerun!, $0.record.observedFinal!) && !regressed.contains($0.record.id) })
         return out
     }
 

@@ -56,6 +56,20 @@ import Testing
         #expect(back.first?.fieldReadable == false)
     }
 
+    @Test func blankFinalCountsAsUnobserved() {
+        let sent = record(raw: "我在用配森", pasted: "我在用 Python", final: "\n")
+        #expect(sent.observedFinal == nil)
+        #expect(!sent.userEdited)
+        let edited = record(raw: "我在用配森", pasted: "我在用 Python", final: "我在用 Swift")
+        #expect(edited.observedFinal == "我在用 Swift" && edited.userEdited)
+    }
+
+    @Test func keepsTheRejectedAnswer() {
+        var r = record(raw: "嗯我来试试", pasted: "嗯我来试试", final: nil, llm: .guardrail)
+        r.rejected = "我来试一下"
+        #expect(DictationHistory.parse(DictationHistory.encode(r)!).first?.rejected == "我来试一下")
+    }
+
     @Test func mapsFallbackReasons() {
         #expect(DictationRecord.status(fallbackReason: nil) == .ok)
         #expect(DictationRecord.status(fallbackReason: "guardrail: too many edits") == .guardrail)
