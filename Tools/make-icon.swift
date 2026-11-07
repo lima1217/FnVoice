@@ -6,6 +6,15 @@ import AppKit
 
 let canvas: CGFloat = 1024
 
+func hex(_ v: UInt32) -> CGColor {
+    CGColor(srgbRed: CGFloat(v >> 16 & 0xFF) / 255, green: CGFloat(v >> 8 & 0xFF) / 255, blue: CGFloat(v & 0xFF) / 255, alpha: 1)
+}
+// Palette from traditional Chinese colours: 靛蓝 body, a deeper indigo capsule, 象牙白 bars.
+let env = ProcessInfo.processInfo.environment
+let background = hex(UInt32(env["ICON_BG"] ?? "065279", radix: 16)!)
+let capsuleFill = hex(UInt32(env["ICON_CAPSULE"] ?? "033A57", radix: 16)!)
+let bars = hex(0xFFFBF0)
+
 func drawIcon(in ctx: CGContext) {
     // macOS icon grid: 824×824 body centred on the 1024 canvas, corner radius ≈ 185.
     let body = CGRect(x: 100, y: 100, width: 824, height: 824)
@@ -19,36 +28,16 @@ func drawIcon(in ctx: CGContext) {
     ctx.fillPath()
     ctx.restoreGState()
 
-    // Background: deep indigo → violet.
-    ctx.saveGState()
+    // Flat background in 靛蓝 (indigo, #065279), a traditional Chinese colour; no gradient or sheen.
     ctx.addPath(bodyPath)
-    ctx.clip()
-    let space = CGColorSpace(name: CGColorSpace.sRGB)!
-    let background = CGGradient(colorsSpace: space, colors: [
-        CGColor(srgbRed: 0.42, green: 0.36, blue: 0.98, alpha: 1),
-        CGColor(srgbRed: 0.16, green: 0.12, blue: 0.48, alpha: 1),
-    ] as CFArray, locations: [0, 1])!
-    ctx.drawLinearGradient(background, start: CGPoint(x: 0, y: body.maxY), end: CGPoint(x: 0, y: body.minY), options: [])
-    // Top sheen.
-    let sheen = CGGradient(colorsSpace: space, colors: [
-        CGColor(gray: 1, alpha: 0.18), CGColor(gray: 1, alpha: 0),
-    ] as CFArray, locations: [0, 1])!
-    ctx.drawLinearGradient(sheen, start: CGPoint(x: 0, y: body.maxY), end: CGPoint(x: 0, y: body.midY), options: [])
-    ctx.restoreGState()
-
-    // The HUD capsule.
-    let capsule = CGRect(x: body.midX - 310, y: body.midY - 130, width: 620, height: 260)
-    let capsulePath = CGPath(roundedRect: capsule, cornerWidth: 130, cornerHeight: 130, transform: nil)
-    ctx.saveGState()
-    ctx.setShadow(offset: CGSize(width: 0, height: -8), blur: 24, color: CGColor(gray: 0, alpha: 0.35))
-    ctx.addPath(capsulePath)
-    ctx.setFillColor(CGColor(srgbRed: 0.08, green: 0.06, blue: 0.22, alpha: 0.55))
+    ctx.setFillColor(background)
     ctx.fillPath()
-    ctx.restoreGState()
-    ctx.addPath(capsulePath)
-    ctx.setStrokeColor(CGColor(gray: 1, alpha: 0.22))
-    ctx.setLineWidth(4)
-    ctx.strokePath()
+
+    // The HUD capsule: a flat, darker shade of the background.
+    let capsule = CGRect(x: body.midX - 310, y: body.midY - 130, width: 620, height: 260)
+    ctx.addPath(CGPath(roundedRect: capsule, cornerWidth: 130, cornerHeight: 130, transform: nil))
+    ctx.setFillColor(capsuleFill)
+    ctx.fillPath()
 
     // Waveform: the HUD's bar weights [0.5, 0.8, 1.0, 0.75, 0.55].
     let weights: [CGFloat] = [0.5, 0.8, 1.0, 0.75, 0.55]
@@ -63,7 +52,7 @@ func drawIcon(in ctx: CGContext) {
         ctx.addPath(CGPath(roundedRect: bar, cornerWidth: barWidth / 2, cornerHeight: barWidth / 2, transform: nil))
         x += barWidth + gap
     }
-    ctx.setFillColor(CGColor(gray: 1, alpha: 0.96))
+    ctx.setFillColor(bars)
     ctx.fillPath()
 }
 
