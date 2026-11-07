@@ -60,12 +60,8 @@ public struct EvalCase: Codable, Equatable, Sendable {
     public var keep: [String]?
     /// `rewrite` cases: words the output must not contain (a value taken back, an obeyed injection).
     public var drop: [String]?
-    /// `correct` and `cleanup` cases: the target app and the text before the caret, as live
-    /// dictation passes them to refinement.
+    /// `correct` and `cleanup` cases: the target app's name, as live dictation passes it to refinement.
     public var app: String?
-    public var context: String?
-
-    public var refinementContext: RefinementContext { RefinementContext(app: app, before: context) }
 
     public init(id: String, kind: Kind, reference: String, audio: String? = nil, input: String? = nil) {
         self.id = id

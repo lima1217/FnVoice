@@ -64,9 +64,8 @@ public struct DictationRecord: Codable, Equatable, Sendable {
     /// Whether the focused field was readable at Fn-down, i.e. whether the dictation typed first
     /// and could swap the LLM answer in later.
     public var fieldReadable: Bool?
-    /// The target app's display name and the text before the caret (clipped), as given to the LLM.
+    /// The target app's display name, as given to the LLM.
     public var appName: String?
-    public var context: String?
 
     public init(
         id: String = UUID().uuidString, time: Date = Date(), engine: String, language: String,

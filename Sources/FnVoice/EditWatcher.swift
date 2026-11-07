@@ -74,18 +74,11 @@ import FnVoiceCore
 
     // MARK: - Accessibility
 
-    /// One Accessibility read of the focused field of `pid`: whether it can be read back, which is
-    /// what a later in-place replacement needs (password fields and huge documents can't), and the
-    /// text before the caret (before the selection, if any), nil when the caret can't be read.
-    static func readFocusedField(pid: Int32) -> (readable: Bool, before: String?) {
-        guard let element = focusedElement(pid: pid), let value = value(of: element) else { return (false, nil) }
-        guard let selection = selectedRange(of: element) else { return (true, nil) }
-        let ns = value as NSString
-        let end = min(max(selection.location, 0), ns.length)
-        guard end > 0 else { return (true, "") }
-        // A tail generously longer than RefinementContext keeps, cut on a character boundary.
-        let start = ns.rangeOfComposedCharacterSequence(at: max(0, end - RefinementContext.maxBefore * 4)).location
-        return (true, ns.substring(with: NSRange(location: start, length: end - start)))
+    /// True when the focused field of `pid` can be read back through Accessibility, which is what a
+    /// later in-place replacement needs. Password fields and huge documents count as unreadable.
+    static func canReadFocusedField(pid: Int32) -> Bool {
+        guard let element = focusedElement(pid: pid) else { return false }
+        return value(of: element) != nil
     }
 
     private struct Baseline {
