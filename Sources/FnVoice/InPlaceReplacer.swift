@@ -33,17 +33,23 @@ import FnVoiceCore
         else { return .skipped("text moved") }
 
         let target = NSRange(location: caret - length, length: length)
-        guard EditWatcher.select(target, in: element) else {
+        guard await EditWatcher.select(target, in: element) else {
             // Put the caret back in case the app moved it while refusing the range.
-            _ = EditWatcher.select(NSRange(location: caret, length: 0), in: element)
+            _ = await EditWatcher.select(NSRange(location: caret, length: 0), in: element)
             return .skipped("selection not accepted")
+        }
+        // `select` may wait for the field to apply the range; the user could have typed meanwhile.
+        guard let now = EditWatcher.value(of: element), (now as NSString).length >= target.upperBound,
+              (now as NSString).substring(with: target) == typed else {
+            _ = await EditWatcher.select(NSRange(location: caret, length: 0), in: element)
+            return .skipped("text moved")
         }
         do {
             _ = try await injector.inject(text, expectedPID: pid, onPasted: onPasted)
             return .replaced
         } catch {
             // The raw text is still selected; a keystroke now would delete it. Deselect first.
-            _ = EditWatcher.select(NSRange(location: caret, length: 0), in: element)
+            _ = await EditWatcher.select(NSRange(location: caret, length: 0), in: element)
             let message = (error as? InjectionError)?.userMessage ?? error.localizedDescription
             return .failed(message)
         }

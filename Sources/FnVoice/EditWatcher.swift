@@ -159,10 +159,20 @@ import FnVoiceCore
     }
 
     /// Asks the field to select `range`, and reports whether it did (some apps accept the call and ignore it).
-    static func select(_ range: NSRange, in element: AXUIElement) -> Bool {
+    /// Chromium and Electron fields (Chrome, the Claude and Slack apps…) apply the range
+    /// asynchronously: the set returns success, an immediate read still gives the old caret, and the
+    /// new range shows 10–40 ms later (measured 2026-11-07). Reading back at once made every swap in
+    /// those apps skip as "selection not accepted", so wait up to `settle` for the range to land.
+    static func select(_ range: NSRange, in element: AXUIElement, settle: Duration = .milliseconds(200)) async -> Bool {
         var cf = CFRange(location: range.location, length: range.length)
         guard let value = AXValueCreate(.cfRange, &cf) else { return false }
         guard AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, value) == .success else { return false }
-        return selectedRange(of: element) == range
+        let clock = ContinuousClock()
+        let deadline = clock.now + settle
+        while selectedRange(of: element) != range {
+            guard clock.now < deadline else { return false }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return true
     }
 }
