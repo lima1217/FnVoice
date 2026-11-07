@@ -163,10 +163,10 @@ Some behavior to know about:
 
 ## Evaluation
 
-`Eval/corpus.jsonl` has three kinds of case: 60 dictation clips (`mixed`: 40 Chinese with English terms, 20 Chinese only), 28 already-correct sentences (`correct`) and 19 spoken-text cases (`cleanup`: fillers, stutters, self-corrections, punctuation, lists). Only the clips go through audio; the other two are fed to refinement as text.
+`Eval/corpus.jsonl` has four kinds of case: 60 dictation clips (`mixed`: 40 Chinese with English terms, 20 Chinese only), 28 already-correct sentences (`correct`), 19 spoken-text cases (`cleanup`: fillers, stutters, self-corrections, punctuation, lists) and 24 rewrite-by-intent cases (`rewrite`: verbose dictation to turn into an email or a tidy message, plus adversarial negation, injection, self-correction and number cases). Only the clips go through audio; the others are fed to refinement as text.
 
 - `make eval-audio` synthesizes the missing audio with `say`. Replace the files in `Eval/audio/` with real recordings for a harsher test.
-- `make eval` runs the real recognizer, then refinement, and reports mean CER before and after refinement, the **false-correction rate** on correct sentences (target: 0%), and how many cleanup cases match their expected text, punctuation ignored (target: all). `GATE=all` sends every case to the LLM regardless of the menu setting.
+- `make eval` runs the real recognizer, then refinement, and reports mean CER before and after refinement, the **false-correction rate** on correct sentences (target: 0%), how many cleanup cases match their expected text, punctuation ignored (target: all), and how many rewrite outputs keep their facts (target: all). A rewrite has no single right answer, so `FactCheck` compares facts, not wording: every number (五万 = 5万, 三点半 = 3:30), date word, English word and negation in the input must survive, none may be invented, a value the speaker took back (周三，不对，周四) must not come back, and each case's `keep` words must be present and `drop` words absent. It can't see names or meaning in Chinese words; that is what `keep`/`drop` are for. A unit test runs it over every case's hand-written reference, so it can't drift into rejecting good rewrites. `GATE=all` sends every case to the LLM regardless of the menu setting.
 
 The LLM comes from `FNVOICE_LLM_BASE_URL`, `FNVOICE_LLM_API_KEY` and `FNVOICE_LLM_MODEL`, or else from the app's settings:
 

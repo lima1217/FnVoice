@@ -52,6 +52,7 @@ import Speech
         var mixed: [EvalRow] = []
         var correct: [EvalRow] = []
         var cleanup: [EvalRow] = []
+        var rewrite: [EvalRow] = []
         for c in cases {
             switch c.kind {
             case .mixed:
@@ -122,6 +123,28 @@ import Speech
                 }
                 print("[\(c.id)] \(input) → \(row.refined ?? "-")")
                 cleanup.append(row)
+            
+            case .rewrite:
+                // No rewrite mode yet: these run through the same refinement as everything else,
+                // so the section is a baseline for the fact check.
+                let input = c.input ?? c.reference
+                var row = EvalRow(id: c.id, reference: c.reference, raw: input, refined: nil)
+                row.category = c.category
+                if refiner != nil && !RefinementGate.shouldRefine(input, scope: scope) {
+                    row.refined = input
+                    row.note = "LLM skipped by gate"
+                } else if let refiner {
+                    let started = ContinuousClock.now
+                    let outcome = await refiner.refine(input)
+                    row.llmMs = Int((ContinuousClock.now - started) / .milliseconds(1))
+                    row.refined = outcome.text
+                    row.note = outcome.evalNote
+                }
+                if let out = row.refined {
+                    row.facts = FactCheck.check(source: input, output: out, vocabulary: vocabulary, keep: c.keep ?? [], drop: c.drop ?? [])
+                }
+                print("[\(c.id)] \(row.facts?.summary ?? "-")")
+                rewrite.append(row)
             }
         }
 
@@ -129,7 +152,7 @@ import Speech
             Generated \(ISO8601DateFormatter().string(from: Date())) · language \(language.rawValue) · engine \(engine.displayName) · \
             speech \(speechOK ? "authorized" : "NOT authorized") · LLM \(refiner == nil ? "not configured" : "model \(config.model), gate \(scope.rawValue)")
             """
-        let report = EvalReport.markdown(mixed: mixed, correct: correct, cleanup: cleanup, llmEnabled: refiner != nil, header: header)
+        let report = EvalReport.markdown(mixed: mixed, correct: correct, cleanup: cleanup, rewrite: rewrite, llmEnabled: refiner != nil, header: header)
         do {
             try report.write(toFile: outPath, atomically: true, encoding: .utf8)
             print("report written to \(outPath)")

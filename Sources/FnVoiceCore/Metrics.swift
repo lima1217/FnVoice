@@ -41,6 +41,10 @@ public struct EvalCase: Codable, Equatable, Sendable {
         /// Spoken-style text (fillers, stutters, self-corrections, missing punctuation): feed `input`
         /// to refinement; it passes when the output matches `reference`, punctuation ignored.
         case cleanup
+        /// A dictation to be rewritten by intent (an email, a tidy message). There is no single
+        /// right answer: `reference` is one acceptable rewrite, and the output passes when
+        /// `FactCheck` finds every fact of `input` kept, none invented, and `keep`/`drop` honoured.
+        case rewrite
     }
 
     public var id: String
@@ -48,8 +52,14 @@ public struct EvalCase: Codable, Equatable, Sendable {
     public var reference: String
     /// Audio path relative to the corpus file. Optional for `correct` cases.
     public var audio: String?
-    /// What refinement is given, for `cleanup` cases.
+    /// What refinement is given, for `cleanup` and `rewrite` cases.
     public var input: String?
+    /// `rewrite` cases: what the case tests (verbose, negation, injection, selfcorrect, numbers).
+    public var category: String?
+    /// `rewrite` cases: words the output must contain (names the fact check can't see).
+    public var keep: [String]?
+    /// `rewrite` cases: words the output must not contain (a value taken back, an obeyed injection).
+    public var drop: [String]?
 
     public init(id: String, kind: Kind, reference: String, audio: String? = nil, input: String? = nil) {
         self.id = id
@@ -76,6 +86,9 @@ public struct EvalRow: Sendable {
     public var note: String?
     /// LLM round trip, when the LLM was called.
     public var llmMs: Int?
+    /// `rewrite` cases: what the case tests, and the fact check of the output against the input.
+    public var category: String?
+    public var facts: FactCheck.Result?
 
     public init(id: String, reference: String, raw: String?, refined: String?, note: String? = nil) {
         self.id = id
@@ -88,7 +101,7 @@ public struct EvalRow: Sendable {
 
 public enum EvalReport {
     public static func markdown(
-        mixed: [EvalRow], correct: [EvalRow], cleanup: [EvalRow] = [], llmEnabled: Bool, header: String,
+        mixed: [EvalRow], correct: [EvalRow], cleanup: [EvalRow] = [], rewrite: [EvalRow] = [], llmEnabled: Bool, header: String,
         liveTimeoutMs: Int = 4000
     ) -> String {
         var out = "# FnVoice evaluation\n\n\(header)\n\n"
@@ -147,6 +160,29 @@ public enum EvalReport {
                 for r in cleanup {
                     let mark = r.refined.map { sameWords($0, r.reference) } == true ? "ok" : "MISS"
                     out += "| \(r.id) | \(cell(r.raw)) | \(cell(r.reference)) | \(cell(r.refined)) | \(mark)\(r.note.map { " · " + $0 } ?? "") |\n"
+                }
+            } else {
+                out += "Skipped: LLM not configured.\n"
+            }
+        }
+
+        if !rewrite.isEmpty {
+            out += "\n## Rewrite by intent (fact preservation)\n\n"
+            if llmEnabled {
+                let ok = rewrite.filter { $0.facts?.passed == true }
+                out += "Facts preserved: **\(ok.count)/\(rewrite.count)**, target all. "
+                    + "Each output is checked against its input by `FactCheck`: numbers, date words, English words and "
+                    + "negations kept, none invented, no value the speaker took back, `keep` present, `drop` absent. "
+                    + "Whether the text was actually rewritten is not scored.\n\n"
+                let categories = Dictionary(grouping: rewrite, by: { $0.category ?? "-" })
+                out += "| category | preserved |\n|---|---|\n"
+                for (c, rs) in categories.sorted(by: { $0.key < $1.key }) {
+                    out += "| \(c) | \(rs.filter { $0.facts?.passed == true }.count)/\(rs.count) |\n"
+                }
+                out += "\n| id | category | input | output | facts | note |\n|---|---|---|---|---|---|\n"
+                for r in rewrite {
+                    out += "| \(r.id) | \(r.category ?? "-") | \(cell(r.raw)) | \(cell(r.refined)) | "
+                        + "\(r.facts.map { $0.passed ? "ok" : "FAIL · " + $0.summary } ?? "-") | \(r.note ?? "") |\n"
                 }
             } else {
                 out += "Skipped: LLM not configured.\n"
