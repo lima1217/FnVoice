@@ -1,5 +1,6 @@
 import AVFoundation
 import FnVoiceCore
+import ObjCTry
 import Speech
 
 enum CaptureError: Error {
@@ -44,10 +45,16 @@ final class AudioSink: @unchecked Sendable {
         levels.set(LevelMeter.level(UnsafeBufferPointer(start: channel, count: Int(buffer.frameLength))))
     }
 
-    static func installTap(on node: AVAudioInputNode, format: AVAudioFormat, sink: AudioSink) {
-        node.installTap(onBus: 0, bufferSize: 1024, format: format) { @Sendable buffer, _ in
-            sink.consume(buffer)
-        }
+    /// AVFAudio raises an Objective-C exception (not a Swift error) when `format` no longer
+    /// matches the hardware; caught here so it never unwinds through Swift frames.
+    static func installTap(on node: AVAudioInputNode, format: AVAudioFormat, sink: AudioSink) throws {
+        var error: NSError?
+        let ok = FNTryObjC({
+            node.installTap(onBus: 0, bufferSize: 1024, format: format) { @Sendable buffer, _ in
+                sink.consume(buffer)
+            }
+        }, &error)
+        if !ok { throw CaptureError.engine(error?.localizedDescription ?? "installTap failed") }
     }
 }
 
@@ -177,11 +184,19 @@ final class AudioSink: @unchecked Sendable {
         }
     }
 
-    private func startEngine() throws {
+    private func startEngine(retry: Bool = true) throws {
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
         guard format.sampleRate > 0, format.channelCount > 0 else { throw CaptureError.noInputDevice }
-        AudioSink.installTap(on: input, format: format, sink: sink)
+        do {
+            try AudioSink.installTap(on: input, format: format, sink: sink)
+        } catch where retry {
+            // Stale cached format after a device switch while idle; a fresh engine reads the
+            // current one (see AnalyzerCapture.startAudio).
+            Log.audio.notice("tap refused (\(String(describing: error), privacy: .public)); retrying on a fresh engine")
+            engine = AVAudioEngine()
+            return try startEngine(retry: false)
+        }
         engine.prepare()
         do {
             try engine.start()

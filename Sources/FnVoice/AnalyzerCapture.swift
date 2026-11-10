@@ -1,5 +1,6 @@
 import AVFoundation
 import FnVoiceCore
+import ObjCTry
 import Speech
 
 /// The live-dictation surface shared by the legacy SFSpeechRecognizer engine and the
@@ -338,10 +339,16 @@ final class AnalyzerAudioSink: @unchecked Sendable {
         return copy
     }
 
-    static func installTap(on node: AVAudioInputNode, format: AVAudioFormat, sink: AnalyzerAudioSink) {
-        node.installTap(onBus: 0, bufferSize: 1024, format: format) { @Sendable buffer, _ in
-            sink.consume(buffer)
-        }
+    /// AVFAudio raises an Objective-C exception (not a Swift error) when `format` no longer
+    /// matches the hardware; caught here so it never unwinds through Swift frames.
+    static func installTap(on node: AVAudioInputNode, format: AVAudioFormat, sink: AnalyzerAudioSink) throws {
+        var error: NSError?
+        let ok = FNTryObjC({
+            node.installTap(onBus: 0, bufferSize: 1024, format: format) { @Sendable buffer, _ in
+                sink.consume(buffer)
+            }
+        }, &error)
+        if !ok { throw CaptureError.engine(error?.localizedDescription ?? "installTap failed") }
     }
 }
 
@@ -414,11 +421,20 @@ final class AnalyzerAudioSink: @unchecked Sendable {
         session = nil
     }
 
-    private func startAudio() throws {
+    private func startAudio(retry: Bool = true) throws {
         let node = audio.inputNode
         let format = node.outputFormat(forBus: 0)
         guard format.sampleRate > 0, format.channelCount > 0 else { throw CaptureError.noInputDevice }
-        AnalyzerAudioSink.installTap(on: node, format: format, sink: sink)
+        do {
+            try AnalyzerAudioSink.installTap(on: node, format: format, sink: sink)
+        } catch where retry {
+            // The engine outlives dictations but watches for device changes only while running,
+            // so after an idle switch (AirPods 48k ↔ HFP 24k) its cached format is stale and the
+            // tap is refused. A fresh engine reads the current hardware format.
+            Log.audio.notice("tap refused (\(String(describing: error), privacy: .public)); retrying on a fresh engine")
+            audio = AVAudioEngine()
+            return try startAudio(retry: false)
+        }
         audio.prepare()
         do {
             try audio.start()

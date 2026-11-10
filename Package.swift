@@ -12,8 +12,11 @@ let package = Package(
         // Pure logic: state machine, key tracking, waveform math, injection orchestration,
         // LLM client/guardrails, eval metrics. No AppKit, fully unit-testable.
         .target(name: "FnVoiceCore", swiftSettings: strict),
+        // Catches Objective-C exceptions (AVFAudio raises them, e.g. on a tap format mismatch)
+        // so they reach Swift as errors instead of unwinding through Swift frames.
+        .target(name: "ObjCTry"),
         // The menu-bar app: system adapters (event tap, TIS, NSPasteboard, Speech, Keychain) and UI.
-        .executableTarget(name: "FnVoice", dependencies: ["FnVoiceCore"], swiftSettings: strict),
+        .executableTarget(name: "FnVoice", dependencies: ["FnVoiceCore", "ObjCTry"], swiftSettings: strict),
         // Minimal NSTextView app used as an end-to-end injection target.
         .executableTarget(name: "InjectProbe", swiftSettings: strict),
         .testTarget(name: "FnVoiceCoreTests", dependencies: ["FnVoiceCore"], swiftSettings: strict),
