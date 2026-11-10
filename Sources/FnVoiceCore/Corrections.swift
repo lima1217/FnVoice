@@ -227,12 +227,65 @@ public struct CorrectionStore: Equatable, Sendable {
         return entries.contains { s.contains($0.correction.wrong) }
     }
 
-    /// Corrected terms, for recognition biasing and the LLM vocabulary.
+    /// Corrected terms, for recognition biasing and the LLM vocabulary. Only word-like right sides:
+    /// a content edit (50 → 30, 要，这 → 要3）这) is no term to bias toward.
     public func vocabularyTerms(limit: Int = 30) -> [String] {
         var seen = Set<String>()
         return entries.map(\.correction.right)
-            .filter { $0.count >= 2 && seen.insert($0).inserted }
+            .filter { $0.count >= 2 && Self.isTermLike($0) && seen.insert($0).inserted }
             .prefix(limit).map { $0 }
+    }
+
+    static func isTermLike(_ s: String) -> Bool {
+        s.contains(where: \.isLetter)
+            && s.unicodeScalars.allSatisfy { !CharacterSet.punctuationCharacters.contains($0) || ".-_".unicodeScalars.contains($0) }
+    }
+
+    /// The store as dictation should use it, given the vocabulary the user maintains by hand, which
+    /// wins over what was learned from edits:
+    /// - a right side spelled within a typo of a vocabulary term takes the term's spelling (the user
+    ///   typed "interwingle" once while fixing a dictation; their vocabulary says "intertwingle");
+    /// - a pair whose wrong side is itself a vocabulary term is dropped (Claude → global came from an
+    ///   LLM over-correction; shown as a hint, it would teach the LLM to rewrite a real "Claude").
+    /// The file is left as it is: this only shapes what reaches the LLM and the auto-replacer.
+    public func aligned(with vocabulary: [String]) -> CorrectionStore {
+        let terms = Set(vocabulary.map { $0.lowercased() })
+        var out: [Entry] = []
+        for var e in entries where !terms.contains(e.correction.wrong.lowercased()) {
+            e.correction.right = Self.vocabularySpelling(of: e.correction.right, in: vocabulary) ?? e.correction.right
+            guard e.correction.right != e.correction.wrong else { continue }
+            out.append(e)
+        }
+        return CorrectionStore(entries: out)
+    }
+
+    /// The vocabulary term `word` is a misspelling of: same letters ignoring case, or (for Latin
+    /// words of 5+ letters) at most one edit per 5 letters away. Nil when none is that close.
+    static func vocabularySpelling(of word: String, in vocabulary: [String]) -> String? {
+        let w = word.lowercased()
+        if let exact = vocabulary.first(where: { $0.lowercased() == w }) { return exact }
+        guard w.count >= 5, w.allSatisfy({ $0.isASCII && ($0.isLetter || $0 == " " || $0 == "-") }) else { return nil }
+        var best: (term: String, d: Int)?
+        for term in vocabulary where term.count >= 5 && term.allSatisfy(\.isASCII) {
+            let d = editDistance(w, term.lowercased())
+            if d <= max(1, min(w.count, term.count) / 5), d < (best?.d ?? .max) { best = (term, d) }
+        }
+        return best?.term
+    }
+
+    static func editDistance(_ a: String, _ b: String) -> Int {
+        let a = Array(a), b = Array(b)
+        var row = Array(0...b.count)
+        for (i, ca) in a.enumerated() {
+            var diagonal = row[0]
+            row[0] = i + 1
+            for (j, cb) in b.enumerated() {
+                let above = row[j + 1]
+                row[j + 1] = min(above + 1, row[j] + 1, diagonal + (ca == cb ? 0 : 1))
+                diagonal = above
+            }
+        }
+        return row[b.count]
     }
 
     /// Pairs shown to the LLM, most-confirmed first.

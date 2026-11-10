@@ -29,9 +29,10 @@ import FnVoiceCore
             model: env["FNVOICE_LLM_MODEL"] ?? settings.llmModel
         )
         let scope = argumentValue("--gate", in: args).flatMap(RefinementScope.init(rawValue:)) ?? settings.refinementScope
-        let corrections = (try? String(contentsOf: AppController.correctionsURL, encoding: .utf8))
-            .map(CorrectionStore.parse) ?? CorrectionStore()
-        let userVocabulary = (try? String(contentsOf: AppController.vocabularyURL, encoding: .utf8)).map(Vocabulary.parse) ?? []
+        let userVocabulary = AppController.userVocabulary()
+        let corrections = ((try? String(contentsOf: AppController.correctionsURL, encoding: .utf8))
+            .map(CorrectionStore.parse) ?? CorrectionStore())
+            .aligned(with: Vocabulary.merged(user: userVocabulary))
         // Same client settings as live dictation (4 s timeout, hedge at 2 s), so timeouts are comparable.
         let refiner = !args.contains("--no-llm") && config.isConfigured
             ? Refiner(

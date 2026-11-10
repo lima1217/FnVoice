@@ -134,4 +134,26 @@ import Testing
         #expect(store.hints().count == 2)
         #expect(RefinementPrompt.system(vocabulary: [], corrections: [fix]).contains("带码 → 代码"))
     }
+
+    @Test func contentEditsAreNoVocabulary() {
+        let store = CorrectionStore.parse("50 → 30\n要，这 → 要3）这\n盖尔 → gall\nEBUB → EPUB\n")
+        #expect(store.vocabularyTerms() == ["gall", "EPUB"])
+    }
+
+    @Test func handKeptVocabularyWinsOverLearnedSpelling() {
+        let store = CorrectionStore.parse(
+            "intowinger → interwingle\t2\nClaude → global\ngethave → github\n杰森 → JSON\nlima → llm\n"
+        )
+        let aligned = store.aligned(with: ["intertwingle", "Claude", "GitHub", "LLM"])
+        #expect(aligned.entries.map(\.correction) == [
+            Correction(wrong: "intowinger", right: "intertwingle"),
+            Correction(wrong: "gethave", right: "GitHub"),
+            Correction(wrong: "杰森", right: "JSON"),
+            Correction(wrong: "lima", right: "LLM"),
+        ])
+        #expect(aligned.apply("打开 intowinger") == "打开 intertwingle")
+        // Unrelated words stay as learned.
+        #expect(CorrectionStore.vocabularySpelling(of: "global", in: ["Claude", "GitLab"]) == nil)
+        #expect(CorrectionStore.editDistance("interwingle", "intertwingle") == 1)
+    }
 }

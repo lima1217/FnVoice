@@ -184,7 +184,7 @@ import ServiceManagement
                     return
                 }
                 // Mistakes the user corrected twice are fixed here, without the LLM.
-                let corrections = self.loadCorrections()
+                let corrections = self.usableCorrections()
                 let text = corrections.apply(heard)
                 // Pure-Chinese text was almost always right in the eval: skip the LLM round trip for it.
                 let llmOn = self.settings.llmEnabled && self.llmConfig.isConfigured
@@ -217,7 +217,7 @@ import ServiceManagement
         case .refine(let s, let text):
             let refiner = Refiner(
                 client: OpenAICompatibleClient(config: llmConfig), vocabulary: currentVocabulary(),
-                corrections: loadCorrections().hints()
+                corrections: usableCorrections().hints()
             )
             let app = targetAppName
             refineTask = Task { @MainActor in
@@ -526,8 +526,11 @@ import ServiceManagement
     }
 
     private func currentVocabulary() -> [String] {
-        let user = (try? String(contentsOf: Self.vocabularyURL, encoding: .utf8)).map(Vocabulary.parse) ?? []
-        return Vocabulary.merged(user: user + loadCorrections().vocabularyTerms())
+        Vocabulary.merged(user: Self.userVocabulary() + usableCorrections().vocabularyTerms())
+    }
+
+    static func userVocabulary() -> [String] {
+        (try? String(contentsOf: vocabularyURL, encoding: .utf8)).map(Vocabulary.parse) ?? []
     }
 
     // MARK: - Learned corrections
@@ -552,6 +555,11 @@ import ServiceManagement
     /// Read fresh each time so hand edits to the file apply to the next dictation.
     private func loadCorrections() -> CorrectionStore {
         (try? String(contentsOf: Self.correctionsURL, encoding: .utf8)).map(CorrectionStore.parse) ?? CorrectionStore()
+    }
+
+    /// Learned corrections as dictation uses them: deferring to the hand-kept vocabulary.
+    private func usableCorrections() -> CorrectionStore {
+        loadCorrections().aligned(with: Vocabulary.merged(user: Self.userVocabulary()))
     }
 
     private func learn(_ found: [Correction]) {
