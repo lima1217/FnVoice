@@ -191,9 +191,16 @@ public enum LiveEval {
     public static func markdown(rows: [Row], header: String) -> String {
         let records = rows.map(\.record)
         var out = "# Live-history eval\n\n\(header)\n\n"
-
-        // Recorded live behaviour.
         out += "## Recorded dictations (\(records.count))\n\n"
+        out += timings(records) + outcomes(records) + appTable(records) + "\n"
+        out += accuracy(rows)
+        return out
+    }
+
+    // MARK: Recorded live behaviour
+
+    static func timings(_ records: [DictationRecord]) -> String {
+        var out = ""
         if let first = records.map(\.time).min(), let last = records.map(\.time).max() {
             let f = ISO8601DateFormatter()
             out += "From \(f.string(from: first)) to \(f.string(from: last)).\n\n"
@@ -212,12 +219,15 @@ public enum LiveEval {
         let withoutLLM = records.filter { $0.llm == .skipped || $0.llm == .off }.compactMap(\.totalMs)
         out += "\nFn-up → typed, p50: \(ms(percentile(withoutLLM, 0.5))) without LLM (n=\(withoutLLM.count)), "
             + "\(ms(percentile(withLLM, 0.5))) with LLM (n=\(withLLM.count)).\n\n"
+        return out
+    }
 
-        out += "| refinement outcome | count | share of sent |\n|---|---|---|\n"
+    static func outcomes(_ records: [DictationRecord]) -> String {
+        var out = "| refinement outcome | count | share of sent |\n|---|---|---|\n"
         let sent = records.filter { [.ok, .guardrail, .timeout, .error, .abandoned].contains($0.llm) }.count
         for status in [DictationRecord.LLM.ok, .guardrail, .timeout, .error, .abandoned, .skipped, .off] {
             let n = records.filter { $0.llm == status }.count
-            let share = [.skipped, .off].contains(status) || sent == 0 ? "" : pct(Double(n) / Double(sent))
+            let share = [.skipped, .off].contains(status) || sent == 0 ? "" : percent(Double(n) / Double(sent))
             out += "| \(status.rawValue) | \(n) | \(share) |\n"
         }
         let observed = records.filter { $0.observedFinal != nil }
@@ -230,77 +240,82 @@ public enum LiveEval {
         if swapped + missed > 0 {
             out += "LLM answers swapped in after typing: \(swapped); changed answers that could not be swapped in: \(missed).\n"
         }
-        out += appTable(records)
-        out += "\n"
+        return out
+    }
 
-        // Accuracy against the user's final text.
-        let scored = rows.filter { $0.record.observedFinal != nil }
-        out += "## Accuracy against your final text (\(scored.count) dictations)\n\n"
+    // MARK: Accuracy against the user's final text
+
+    /// A row whose final text was observed, with that text pulled out once.
+    struct Scored {
+        var row: Row
+        var final: String
+        func matches(_ text: String) -> Bool { ErrorRate.sameWords(text, final) }
+    }
+
+    static func accuracy(_ rows: [Row]) -> String {
+        let scored = rows.compactMap { r in r.record.observedFinal.map { Scored(row: r, final: $0) } }
+        var out = "## Accuracy against your final text (\(scored.count) dictations)\n\n"
         guard !scored.isEmpty else {
             return out + "No dictation has an observed final text yet (needs Accessibility and a readable field).\n"
         }
-        func meanCER(_ hyp: (Row) -> String?) -> (Double, Int)? {
-            let pairs = scored.compactMap { r in hyp(r).map { (r.record.observedFinal!, $0) } }
-            guard !pairs.isEmpty else { return nil }
-            let total = pairs.map { ErrorRate.cer(reference: $0.0, hypothesis: $0.1) }.reduce(0, +)
-            return (total / Double(pairs.count), pairs.count)
-        }
-        out += "| text | mean CER vs final | exact match | n |\n|---|---|---|---|\n"
+        out += variantTable(scored)
+
+        let rerun = scored.compactMap { s in s.row.rerun.map { (s, $0) } }
+        let regressions = rerun.filter { s, now in s.matches(s.row.shipped) && !s.matches(now) }.map(\.0)
+        let fixes = rerun.filter { s, now in !s.matches(s.row.shipped) && s.matches(now) }.map(\.0)
+        out += "\nAgainst what was typed back then, the current pipeline newly gets \(fixes.count) right "
+            + "and newly gets \(regressions.count) wrong.\n"
+        out += rerunSummary(rows)
+
+        let regressed = Set(regressions.map(\.row.record.id))
+        let stillWrong = rerun.filter { s, now in !s.matches(now) && !regressed.contains(s.row.record.id) }.map(\.0)
+        out += examples("Regressions (typed right back then, wrong now)", regressions)
+        out += examples("Fixes (typed wrong back then, right now)", fixes)
+        out += examples("Still wrong after the re-run", stillWrong)
+        return out
+    }
+
+    static func variantTable(_ scored: [Scored]) -> String {
+        var out = "| text | mean CER vs final | exact match | n |\n|---|---|---|---|\n"
         let variants: [(String, (Row) -> String?)] = [
             ("recognizer (raw)", { $0.record.raw }),
             ("typed back then", { $0.shipped }),
             ("current refinement (re-run)", { $0.rerun }),
         ]
         for (name, hyp) in variants {
-            guard let (cer, n) = meanCER(hyp) else {
+            let pairs = scored.compactMap { s in hyp(s.row).map { (s, $0) } }
+            guard !pairs.isEmpty else {
                 out += "| \(name) | - | - | 0 |\n"
                 continue
             }
-            let exact = scored.filter { r in hyp(r).map { same($0, r.record.observedFinal!) } ?? false }.count
-            out += "| \(name) | \(pct(cer)) | \(exact)/\(n) | \(n) |\n"
+            let cer = pairs.map { ErrorRate.cer(reference: $0.0.final, hypothesis: $0.1) }.reduce(0, +) / Double(pairs.count)
+            let exact = pairs.filter { $0.0.matches($0.1) }.count
+            out += "| \(name) | \(percent(cer)) | \(exact)/\(pairs.count) | \(pairs.count) |\n"
         }
-
-        let rerun = scored.filter { $0.rerun != nil }
-        let regressions = rerun.filter { same($0.shipped, $0.record.observedFinal!) && !same($0.rerun!, $0.record.observedFinal!) }
-        let fixes = rerun.filter { !same($0.shipped, $0.record.observedFinal!) && same($0.rerun!, $0.record.observedFinal!) }
-        out += "\nAgainst what was typed back then, the current pipeline newly gets \(fixes.count) right "
-            + "and newly gets \(regressions.count) wrong.\n"
-
-        let rerunRows = rows.filter { $0.rerunLLM != nil }
-        if !rerunRows.isEmpty {
-            let sentNow = rerunRows.filter { [.ok, .guardrail, .timeout, .error].contains($0.rerunLLM!) }
-            let lat = sentNow.compactMap(\.rerunMs)
-            out += "\nRe-run: \(sentNow.count) sent to the LLM, "
-                + "guardrail \(sentNow.filter { $0.rerunLLM == .guardrail }.count), "
-                + "timeout \(sentNow.filter { $0.rerunLLM == .timeout }.count), "
-                + "error \(sentNow.filter { $0.rerunLLM == .error }.count); "
-                + "LLM p50 \(ms(percentile(lat, 0.5))), p90 \(ms(percentile(lat, 0.9))).\n"
-        }
-
-        func list(_ title: String, _ rs: [Row]) {
-            guard !rs.isEmpty else { return }
-            out += "\n### \(title)\n\n| time | raw | typed then | re-run | final |\n|---|---|---|---|---|\n"
-            let f = ISO8601DateFormatter()
-            for r in rs {
-                out += "| \(f.string(from: r.record.time)) | \(cell(r.record.raw)) | \(cell(r.shipped)) | "
-                    + "\(cell(r.rerun ?? "-"))\(r.rerunReason.map { " (\($0))" } ?? "") | \(cell(r.record.observedFinal!)) |\n"
-            }
-        }
-        list("Regressions (typed right back then, wrong now)", regressions)
-        list("Fixes (typed wrong back then, right now)", fixes)
-        let regressed = Set(regressions.map(\.record.id))
-        list("Still wrong after the re-run", rerun.filter { !same($0.rerun!, $0.record.observedFinal!) && !regressed.contains($0.record.id) })
         return out
     }
 
-    /// Equal up to whitespace, punctuation and case: what CER ignores.
-    static func same(_ a: String, _ b: String) -> Bool {
-        ErrorRate.normalize(a) == ErrorRate.normalize(b)
+    static func rerunSummary(_ rows: [Row]) -> String {
+        let sentNow = rows.filter { r in r.rerunLLM.map { [.ok, .guardrail, .timeout, .error].contains($0) } ?? false }
+        guard rows.contains(where: { $0.rerunLLM != nil }) else { return "" }
+        let lat = sentNow.compactMap(\.rerunMs)
+        let count = { (status: DictationRecord.LLM) in sentNow.filter { $0.rerunLLM == status }.count }
+        return "\nRe-run: \(sentNow.count) sent to the LLM, "
+            + "guardrail \(count(.guardrail)), timeout \(count(.timeout)), error \(count(.error)); "
+            + "LLM p50 \(ms(percentile(lat, 0.5))), p90 \(ms(percentile(lat, 0.9))).\n"
+    }
+
+    static func examples(_ title: String, _ rs: [Scored]) -> String {
+        guard !rs.isEmpty else { return "" }
+        var out = "\n### \(title)\n\n| time | raw | typed then | re-run | final |\n|---|---|---|---|---|\n"
+        let f = ISO8601DateFormatter()
+        for s in rs {
+            let r = s.row
+            out += "| \(f.string(from: r.record.time)) | \(tableCell(r.record.raw)) | \(tableCell(r.shipped)) | "
+                + "\(tableCell(r.rerun))\(r.rerunReason.map { " (\($0))" } ?? "") | \(tableCell(s.final)) |\n"
+        }
+        return out
     }
 
     static func ms(_ x: Int?) -> String { x.map { "\($0) ms" } ?? "-" }
-    static func pct(_ x: Double) -> String { String(format: "%.1f%%", x * 100) }
-    static func cell(_ s: String) -> String {
-        s.replacingOccurrences(of: "|", with: "\\|").replacingOccurrences(of: "\n", with: " ")
-    }
 }

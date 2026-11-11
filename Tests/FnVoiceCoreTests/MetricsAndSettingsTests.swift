@@ -72,6 +72,39 @@ extension MetricsTests {
         #expect(md.contains("n/a (nothing transcribed"))
         #expect(!md.contains("| mean CER, raw ASR | 0.0% |"))
     }
+
+    @Test func reportScoresRewritesByFactsPerCategory() {
+        var kept = EvalRow(id: "r1", reference: "-", raw: "周三开会", refined: "周三开会。")
+        kept.category = "numbers"
+        kept.facts = FactCheck.check(source: "周三开会", output: "周三开会。")
+        var lost = EvalRow(id: "r2", reference: "-", raw: "周三开会", refined: "开会。", note: "slow")
+        lost.category = "numbers"
+        lost.facts = FactCheck.check(source: "周三开会", output: "开会。")
+        var other = EvalRow(id: "r3", reference: "-", raw: "好", refined: "好")
+        other.category = "verbose"
+        other.facts = FactCheck.check(source: "好", output: "好")
+        let md = EvalReport.markdown(mixed: [], correct: [], rewrite: [kept, lost, other], llmEnabled: true, header: "h")
+        #expect(md.contains("Facts preserved: **2/3**"))
+        #expect(md.contains("| numbers | 1/2 |\n| verbose | 1/1 |"))
+        #expect(md.contains("| r2 | numbers | 周三开会 | 开会。 | FAIL · missing: 周三 | slow |"))
+    }
+
+    @Test func reportSummarizesLLMLatencyAgainstTheLiveTimeout() {
+        let rows = [100, 300, 5000, 200].enumerated().map { i, ms in
+            var r = EvalRow(id: "c\(i)", reference: "好", raw: "好", refined: "好")
+            r.llmMs = ms
+            return r
+        }
+        let md = EvalReport.markdown(mixed: [], correct: rows, llmEnabled: true, header: "h", liveTimeoutMs: 4000)
+        #expect(md.contains("LLM latency over 4 calls: median 300 ms, p90 5000 ms, max 5000 ms; 1 over the live 4000 ms timeout."))
+    }
+
+    @Test func reportSkipsLLMSectionsWhenTheLLMIsOff() {
+        let row = EvalRow(id: "x", reference: "好", raw: "好", refined: nil)
+        let md = EvalReport.markdown(mixed: [], correct: [row], cleanup: [row], rewrite: [row], llmEnabled: false, header: "h")
+        #expect(md.components(separatedBy: "Skipped: LLM not configured.").count == 4)
+        #expect(!md.contains("False-correction rate"))
+    }
 }
 
 @Suite struct SmokeVerdictTests {

@@ -24,6 +24,9 @@ public enum ErrorRate {
         s.lowercased().filter { !$0.isWhitespace && !$0.isPunctuation && !$0.isSymbol }.map { $0 }
     }
 
+    /// Equal up to whitespace, punctuation and case: what CER ignores.
+    public static func sameWords(_ a: String, _ b: String) -> Bool { normalize(a) == normalize(b) }
+
     public static func cer(reference: String, hypothesis: String) -> Double {
         let r = normalize(reference)
         let h = normalize(hypothesis)
@@ -107,99 +110,113 @@ public enum EvalReport {
         liveTimeoutMs: Int = 4000
     ) -> String {
         var out = "# FnVoice evaluation\n\n\(header)\n\n"
-
-        let scored = mixed.filter { $0.raw != nil }
-        out += "## Dictation (\(scored.count)/\(mixed.count) transcribed)\n\n"
-        out += "| set | cases | mean CER, raw ASR | mean CER, after refinement |\n|---|---|---|---|\n"
-        if scored.isEmpty {
-            out += "| all | 0 | n/a (nothing transcribed; see notes) | n/a |\n"
-        } else {
-            let sets: [(String, [EvalRow])] = [
-                ("all", scored),
-                ("zh + English terms", scored.filter { $0.reference.contains { $0.isASCII && $0.isLetter } }),
-                ("Chinese only", scored.filter { !$0.reference.contains { $0.isASCII && $0.isLetter } }),
-            ]
-            for (name, rows) in sets where !rows.isEmpty {
-                let raw = mean(rows.map { ErrorRate.cer(reference: $0.reference, hypothesis: $0.raw ?? "") })
-                let refined = mean(rows.map { ErrorRate.cer(reference: $0.reference, hypothesis: $0.refined ?? $0.raw ?? "") })
-                out += "| \(name) | \(rows.count) | \(pct(raw)) | \(llmEnabled ? pct(refined) : "n/a (LLM not configured)") |\n"
-            }
-        }
-        let latencies = (mixed + correct + cleanup).compactMap(\.llmMs).sorted()
-        if !latencies.isEmpty {
-            let slow = latencies.filter { $0 > liveTimeoutMs }.count
-            out += "\nLLM latency over \(latencies.count) calls: median \(latencies[latencies.count / 2]) ms, "
-                + "p90 \(latencies[min(latencies.count - 1, latencies.count * 9 / 10)]) ms, max \(latencies.last!) ms; "
-                + "\(slow) over the live \(liveTimeoutMs) ms timeout.\n"
-        }
-        out += "\n| id | reference | raw | refined | CER raw | CER refined | note |\n|---|---|---|---|---|---|---|\n"
-        for r in mixed {
-            let cr = r.raw.map { pct(ErrorRate.cer(reference: r.reference, hypothesis: $0)) } ?? "-"
-            let cf = (r.refined ?? r.raw).map { pct(ErrorRate.cer(reference: r.reference, hypothesis: $0)) } ?? "-"
-            out += "| \(r.id) | \(cell(r.reference)) | \(cell(r.raw)) | \(cell(r.refined)) | \(cr) | \(cf) | \(cell(r.note)) |\n"
-        }
-
-        out += "\n## False corrections on already-correct text\n\n"
-        if llmEnabled {
-            // Punctuation fixes are part of the cleanup, so only a change to the words counts.
-            let changed = correct.filter { $0.refined != nil && !sameWords($0.refined!, $0.reference) }
-            let rate = correct.isEmpty ? 0 : Double(changed.count) / Double(correct.count)
-            out += "False-correction rate: **\(pct(rate))** (\(changed.count)/\(correct.count)), target 0%.\n\n"
-            if !changed.isEmpty {
-                out += "| id | input | output |\n|---|---|---|\n"
-                for r in changed { out += "| \(r.id) | \(cell(r.reference)) | \(cell(r.refined)) |\n" }
-            }
-        } else {
-            out += "Skipped: LLM not configured.\n"
-        }
-
+        out += dictation(mixed, llmEnabled: llmEnabled)
+        out += latency((mixed + correct + cleanup).compactMap(\.llmMs), liveTimeoutMs: liveTimeoutMs)
+        out += dictationRows(mixed)
+        out += section("False corrections on already-correct text", llmEnabled: llmEnabled) { falseCorrections(correct) }
         if !cleanup.isEmpty {
-            out += "\n## Cleanup of spoken text (fillers, self-corrections, punctuation)\n\n"
-            if llmEnabled {
-                let ok = cleanup.filter { r in r.refined.map { sameWords($0, r.reference) } ?? false }
-                out += "Matched: **\(ok.count)/\(cleanup.count)** (punctuation ignored), target all.\n\n"
-                out += "| id | input | expected | output | note |\n|---|---|---|---|---|\n"
-                for r in cleanup {
-                    let mark = r.refined.map { sameWords($0, r.reference) } == true ? "ok" : "MISS"
-                    out += "| \(r.id) | \(cell(r.raw)) | \(cell(r.reference)) | \(cell(r.refined)) | \(mark)\(r.note.map { " · " + $0 } ?? "") |\n"
-                }
-            } else {
-                out += "Skipped: LLM not configured.\n"
+            out += section("Cleanup of spoken text (fillers, self-corrections, punctuation)", llmEnabled: llmEnabled) {
+                cleanupResults(cleanup)
             }
         }
-
         if !rewrite.isEmpty {
-            out += "\n## Rewrite by intent (fact preservation)\n\n"
-            if llmEnabled {
-                let ok = rewrite.filter { $0.facts?.passed == true }
-                out += "Facts preserved: **\(ok.count)/\(rewrite.count)**, target all. "
-                    + "Each output is checked against its input by `FactCheck`: numbers, date words, English words and "
-                    + "negations kept, none invented, no value the speaker took back, `keep` present, `drop` absent. "
-                    + "Whether the text was actually rewritten is not scored.\n\n"
-                let categories = Dictionary(grouping: rewrite, by: { $0.category ?? "-" })
-                out += "| category | preserved |\n|---|---|\n"
-                for (c, rs) in categories.sorted(by: { $0.key < $1.key }) {
-                    out += "| \(c) | \(rs.filter { $0.facts?.passed == true }.count)/\(rs.count) |\n"
-                }
-                out += "\n| id | category | input | output | facts | note |\n|---|---|---|---|---|---|\n"
-                for r in rewrite {
-                    out += "| \(r.id) | \(r.category ?? "-") | \(cell(r.raw)) | \(cell(r.refined)) | "
-                        + "\(r.facts.map { $0.passed ? "ok" : "FAIL · " + $0.summary } ?? "-") | \(r.note ?? "") |\n"
-                }
-            } else {
-                out += "Skipped: LLM not configured.\n"
-            }
+            out += section("Rewrite by intent (fact preservation)", llmEnabled: llmEnabled) { rewriteResults(rewrite) }
         }
         return out
     }
 
-    static func sameWords(_ a: String, _ b: String) -> Bool { ErrorRate.normalize(a) == ErrorRate.normalize(b) }
+    /// A report section whose body needs the LLM's output.
+    static func section(_ title: String, llmEnabled: Bool, _ body: () -> String) -> String {
+        "\n## \(title)\n\n" + (llmEnabled ? body() : "Skipped: LLM not configured.\n")
+    }
+
+    static func dictation(_ mixed: [EvalRow], llmEnabled: Bool) -> String {
+        let scored = mixed.filter { $0.raw != nil }
+        var out = "## Dictation (\(scored.count)/\(mixed.count) transcribed)\n\n"
+        out += "| set | cases | mean CER, raw ASR | mean CER, after refinement |\n|---|---|---|---|\n"
+        guard !scored.isEmpty else { return out + "| all | 0 | n/a (nothing transcribed; see notes) | n/a |\n" }
+        let hasLatin = { (r: EvalRow) in r.reference.contains { $0.isASCII && $0.isLetter } }
+        let sets: [(String, [EvalRow])] = [
+            ("all", scored),
+            ("zh + English terms", scored.filter(hasLatin)),
+            ("Chinese only", scored.filter { !hasLatin($0) }),
+        ]
+        for (name, rows) in sets where !rows.isEmpty {
+            let raw = mean(rows.map { ErrorRate.cer(reference: $0.reference, hypothesis: $0.raw ?? "") })
+            let refined = mean(rows.map { ErrorRate.cer(reference: $0.reference, hypothesis: $0.refined ?? $0.raw ?? "") })
+            out += "| \(name) | \(rows.count) | \(percent(raw)) | \(llmEnabled ? percent(refined) : "n/a (LLM not configured)") |\n"
+        }
+        return out
+    }
+
+    static func latency(_ ms: [Int], liveTimeoutMs: Int) -> String {
+        let ms = ms.sorted()
+        guard let max = ms.last else { return "" }
+        let slow = ms.filter { $0 > liveTimeoutMs }.count
+        return "\nLLM latency over \(ms.count) calls: median \(ms[ms.count / 2]) ms, "
+            + "p90 \(ms[min(ms.count - 1, ms.count * 9 / 10)]) ms, max \(max) ms; "
+            + "\(slow) over the live \(liveTimeoutMs) ms timeout.\n"
+    }
+
+    static func dictationRows(_ mixed: [EvalRow]) -> String {
+        var out = "\n| id | reference | raw | refined | CER raw | CER refined | note |\n|---|---|---|---|---|---|---|\n"
+        for r in mixed {
+            let cr = r.raw.map { percent(ErrorRate.cer(reference: r.reference, hypothesis: $0)) } ?? "-"
+            let cf = (r.refined ?? r.raw).map { percent(ErrorRate.cer(reference: r.reference, hypothesis: $0)) } ?? "-"
+            out += "| \(r.id) | \(tableCell(r.reference)) | \(tableCell(r.raw)) | \(tableCell(r.refined)) | \(cr) | \(cf) | \(tableCell(r.note)) |\n"
+        }
+        return out
+    }
+
+    static func falseCorrections(_ correct: [EvalRow]) -> String {
+        // Punctuation fixes are part of the cleanup, so only a change to the words counts.
+        let changed = correct.filter { r in r.refined.map { !ErrorRate.sameWords($0, r.reference) } ?? false }
+        let rate = correct.isEmpty ? 0 : Double(changed.count) / Double(correct.count)
+        var out = "False-correction rate: **\(percent(rate))** (\(changed.count)/\(correct.count)), target 0%.\n\n"
+        guard !changed.isEmpty else { return out }
+        out += "| id | input | output |\n|---|---|---|\n"
+        for r in changed { out += "| \(r.id) | \(tableCell(r.reference)) | \(tableCell(r.refined)) |\n" }
+        return out
+    }
+
+    static func cleanupResults(_ cleanup: [EvalRow]) -> String {
+        let matched = { (r: EvalRow) in r.refined.map { ErrorRate.sameWords($0, r.reference) } ?? false }
+        var out = "Matched: **\(cleanup.filter(matched).count)/\(cleanup.count)** (punctuation ignored), target all.\n\n"
+        out += "| id | input | expected | output | note |\n|---|---|---|---|---|\n"
+        for r in cleanup {
+            let mark = matched(r) ? "ok" : "MISS"
+            out += "| \(r.id) | \(tableCell(r.raw)) | \(tableCell(r.reference)) | \(tableCell(r.refined)) | \(mark)\(r.note.map { " · " + $0 } ?? "") |\n"
+        }
+        return out
+    }
+
+    static func rewriteResults(_ rewrite: [EvalRow]) -> String {
+        let preserved = { (rs: [EvalRow]) in rs.filter { $0.facts?.passed == true }.count }
+        var out = "Facts preserved: **\(preserved(rewrite))/\(rewrite.count)**, target all. "
+            + "Each output is checked against its input by `FactCheck`: numbers, date words, English words and "
+            + "negations kept, none invented, no value the speaker took back, `keep` present, `drop` absent. "
+            + "Whether the text was actually rewritten is not scored.\n\n"
+        out += "| category | preserved |\n|---|---|\n"
+        for (c, rs) in Dictionary(grouping: rewrite, by: { $0.category ?? "-" }).sorted(by: { $0.key < $1.key }) {
+            out += "| \(c) | \(preserved(rs))/\(rs.count) |\n"
+        }
+        out += "\n| id | category | input | output | facts | note |\n|---|---|---|---|---|---|\n"
+        for r in rewrite {
+            out += "| \(r.id) | \(r.category ?? "-") | \(tableCell(r.raw)) | \(tableCell(r.refined)) | "
+                + "\(r.facts.map { $0.passed ? "ok" : "FAIL · " + $0.summary } ?? "-") | \(r.note ?? "") |\n"
+        }
+        return out
+    }
 
     static func mean(_ xs: [Double]) -> Double { xs.isEmpty ? 0 : xs.reduce(0, +) / Double(xs.count) }
-    static func pct(_ x: Double) -> String { String(format: "%.1f%%", x * 100) }
-    static func cell(_ s: String?) -> String {
-        (s ?? "-").replacingOccurrences(of: "|", with: "\\|").replacingOccurrences(of: "\n", with: " ")
-    }
+}
+
+/// A share as the eval reports print it: one decimal and a percent sign.
+func percent(_ x: Double) -> String { String(format: "%.1f%%", x * 100) }
+
+/// Text made safe for one Markdown table cell; nil shows as "-".
+func tableCell(_ s: String?) -> String {
+    (s ?? "-").replacingOccurrences(of: "|", with: "\\|").replacingOccurrences(of: "\n", with: " ")
 }
 
 /// Pass/fail rules for `make smoke`: a few corpus clips streamed through the live recognition path.
