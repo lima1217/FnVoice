@@ -21,13 +21,8 @@ import FnVoiceCore
             records = Array(records.suffix(limit))
         }
 
-        let env = ProcessInfo.processInfo.environment.filter { !$0.value.isEmpty }
         let settings = AppSettings()
-        let config = LLMConfig(
-            baseURL: env["FNVOICE_LLM_BASE_URL"] ?? settings.llmBaseURL,
-            apiKey: env["FNVOICE_LLM_API_KEY"] ?? Keychain.readAPIKey(),
-            model: env["FNVOICE_LLM_MODEL"] ?? settings.llmModel
-        )
+        let config = LLMConfig.forEval(settings)
         let scope = argumentValue("--gate", in: args).flatMap(RefinementScope.init(rawValue:)) ?? settings.refinementScope
         let userVocabulary = AppController.userVocabulary()
         let corrections = ((try? String(contentsOf: AppController.correctionsURL, encoding: .utf8))
@@ -69,13 +64,6 @@ import FnVoiceCore
                 ? "re-run off (\(config.isConfigured ? "--no-llm" : "LLM not configured"))"
                 : "re-run with model \(config.model), gate \(scope.rawValue), \(corrections.entries.count) learned corrections")
         let report = LiveEval.markdown(rows: rows, header: header)
-        do {
-            try report.write(toFile: outPath, atomically: true, encoding: .utf8)
-            print("report written to \(outPath)")
-            return 0
-        } catch {
-            print("cannot write report: \(error)")
-            return 73
-        }
+        return writeReport(report, to: outPath)
     }
 }

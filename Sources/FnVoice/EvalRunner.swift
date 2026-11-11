@@ -29,14 +29,8 @@ import Speech
             return 66
         }
 
-        // `make eval` always forwards these, as empty strings when unset; empty means "use app settings".
-        let env = ProcessInfo.processInfo.environment.filter { !$0.value.isEmpty }
         let settings = AppSettings()
-        let config = LLMConfig(
-            baseURL: env["FNVOICE_LLM_BASE_URL"] ?? settings.llmBaseURL,
-            apiKey: env["FNVOICE_LLM_API_KEY"] ?? Keychain.readAPIKey(),
-            model: env["FNVOICE_LLM_MODEL"] ?? settings.llmModel
-        )
+        let config = LLMConfig.forEval(settings)
         let userVocabulary = (try? String(contentsOf: AppController.vocabularyURL, encoding: .utf8)).map(Vocabulary.parse) ?? []
         let vocabulary = Vocabulary.merged(user: userVocabulary)
         let scope = argumentValue("--gate", in: args).flatMap(RefinementScope.init(rawValue:)) ?? settings.refinementScope
@@ -76,16 +70,7 @@ import Speech
                 do {
                     let raw = try await Self.transcribe(url, language: language, vocabulary: vocabulary, engine: engine)
                     row.raw = raw
-                    if refiner != nil && !RefinementGate.shouldRefine(raw, scope: scope) {
-                        row.refined = raw
-                        row.note = "LLM skipped (no English)"
-                    } else if let refiner {
-                        let started = ContinuousClock.now
-                        let outcome = await refiner.refine(raw)
-                        row.llmMs = Int((ContinuousClock.now - started) / .milliseconds(1))
-                        row.refined = outcome.text
-                        row.note = outcome.evalNote
-                    }
+                    await refine(&row, raw, app: nil, with: refiner, scope: scope)
                 } catch {
                     row.note = "ASR error: \(error.localizedDescription)"
                 }
@@ -94,33 +79,18 @@ import Speech
 
             case .correct:
                 var row = EvalRow(id: c.id, reference: c.reference, raw: c.reference, refined: nil)
-                if refiner != nil && !RefinementGate.shouldRefine(c.reference, scope: scope) {
-                    row.refined = c.reference
-                    row.note = "LLM skipped (no English)"
+                await refine(&row, c.reference, app: c.app, with: refiner, scope: scope)
+                if row.llmMs == nil, row.refined != nil {
                     print("[\(c.id)] skipped by gate")
-                } else if let refiner {
-                    let started = ContinuousClock.now
-                    let outcome = await refiner.refine(c.reference, app: c.app)
-                    row.llmMs = Int((ContinuousClock.now - started) / .milliseconds(1))
-                    row.refined = outcome.text
-                    row.note = outcome.evalNote
-                    print("[\(c.id)] \(outcome.text == c.reference ? "unchanged" : "CHANGED → \(outcome.text)")")
+                } else if let out = row.refined {
+                    print("[\(c.id)] \(out == c.reference ? "unchanged" : "CHANGED → \(out)")")
                 }
                 correct.append(row)
 
             case .cleanup:
                 let input = c.input ?? c.reference
                 var row = EvalRow(id: c.id, reference: c.reference, raw: input, refined: nil)
-                if refiner != nil && !RefinementGate.shouldRefine(input, scope: scope) {
-                    row.refined = input
-                    row.note = "LLM skipped by gate"
-                } else if let refiner {
-                    let started = ContinuousClock.now
-                    let outcome = await refiner.refine(input, app: c.app)
-                    row.llmMs = Int((ContinuousClock.now - started) / .milliseconds(1))
-                    row.refined = outcome.text
-                    row.note = outcome.evalNote
-                }
+                await refine(&row, input, app: c.app, with: refiner, scope: scope)
                 print("[\(c.id)] \(input) → \(row.refined ?? "-")")
                 cleanup.append(row)
             
@@ -130,16 +100,7 @@ import Speech
                 let input = c.input ?? c.reference
                 var row = EvalRow(id: c.id, reference: c.reference, raw: input, refined: nil)
                 row.category = c.category
-                if refiner != nil && !RefinementGate.shouldRefine(input, scope: scope) {
-                    row.refined = input
-                    row.note = "LLM skipped by gate"
-                } else if let refiner {
-                    let started = ContinuousClock.now
-                    let outcome = await refiner.refine(input)
-                    row.llmMs = Int((ContinuousClock.now - started) / .milliseconds(1))
-                    row.refined = outcome.text
-                    row.note = outcome.evalNote
-                }
+                await refine(&row, input, app: nil, with: refiner, scope: scope)
                 if let out = row.refined {
                     row.facts = FactCheck.check(source: input, output: out, vocabulary: vocabulary, keep: c.keep ?? [], drop: c.drop ?? [])
                 }
@@ -153,14 +114,25 @@ import Speech
             speech \(speechOK ? "authorized" : "NOT authorized") · LLM \(refiner == nil ? "not configured" : "model \(config.model), gate \(scope.rawValue)")
             """
         let report = EvalReport.markdown(mixed: mixed, correct: correct, cleanup: cleanup, rewrite: rewrite, llmEnabled: refiner != nil, header: header)
-        do {
-            try report.write(toFile: outPath, atomically: true, encoding: .utf8)
-            print("report written to \(outPath)")
-            return 0
-        } catch {
-            print("cannot write report: \(error)")
-            return 73
+        return writeReport(report, to: outPath)
+    }
+
+    /// Refines `input` into `row` the way live dictation would: skipped when the gate says so,
+    /// timed when the LLM is called. Leaves `row.refined` nil when no LLM is configured.
+    private static func refine(
+        _ row: inout EvalRow, _ input: String, app: String?, with refiner: Refiner?, scope: RefinementScope
+    ) async {
+        guard let refiner else { return }
+        guard RefinementGate.shouldRefine(input, scope: scope) else {
+            row.refined = input
+            row.note = "LLM skipped by gate"
+            return
         }
+        let started = ContinuousClock.now
+        let outcome = await refiner.refine(input, app: app)
+        row.llmMs = Int((ContinuousClock.now - started) / .milliseconds(1))
+        row.refined = outcome.text
+        row.note = outcome.evalNote
     }
 
     private static func transcribe(_ url: URL, language: DictationLanguage, vocabulary: [String], engine: RecognitionEngine) async throws -> String {
@@ -168,6 +140,32 @@ import Speech
             return try await AnalyzerCapture.transcribeFile(url, language: language, vocabulary: vocabulary, engine: engine)
         }
         return try await SpeechCapture.transcribeFile(url, language: language, vocabulary: vocabulary)
+    }
+}
+
+/// Writes an eval report; the exit code for the run.
+func writeReport(_ report: String, to path: String) -> Int32 {
+    do {
+        try report.write(toFile: path, atomically: true, encoding: .utf8)
+        print("report written to \(path)")
+        return 0
+    } catch {
+        print("cannot write report: \(error)")
+        return 73
+    }
+}
+
+extension LLMConfig {
+    /// The app's LLM settings, each overridden by its FNVOICE_LLM_* variable when that is set and
+    /// non-empty (`make eval` forwards them as empty strings when unset). The Keychain is read only
+    /// when FNVOICE_LLM_API_KEY is missing.
+    static func forEval(_ settings: AppSettings) -> LLMConfig {
+        let env = ProcessInfo.processInfo.environment.filter { !$0.value.isEmpty }
+        return LLMConfig(
+            baseURL: env["FNVOICE_LLM_BASE_URL"] ?? settings.llmBaseURL,
+            apiKey: env["FNVOICE_LLM_API_KEY"] ?? Keychain.readAPIKey(),
+            model: env["FNVOICE_LLM_MODEL"] ?? settings.llmModel
+        )
     }
 }
 
