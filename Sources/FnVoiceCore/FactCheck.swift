@@ -151,20 +151,46 @@ public enum FactCheck {
     }
 
     static func located(_ text: String) -> [Located] {
-        let c = Array(text)
-        var used = [Bool](repeating: false, count: c.count)
+        var s = Scanner(Array(text))
+        // Correction markers and non-negating words first, so their 不/别 aren't read as negations.
+        s.scan(EditGuard.correctionMarkers + notNegations) { _ in nil }
+        // Weekdays (周三, 下周三, 礼拜五) before plain date words and numbers.
+        s.weekdays()
+        s.scan(whenWords.map(\.0)) { w in Fact(.when, whenWords.first { $0.0 == w }!.1) }
+        s.latinWords()
+        // Negations before numbers, so 千万别 isn't read as ten million.
+        s.negations()
+        s.arabicNumbers()
+        s.chineseNumbers()
+        return s.found.sorted { $0.range.lowerBound < $1.range.lowerBound }
+    }
+
+    /// One left-to-right pass per fact kind over the same characters; a character taken by an
+    /// earlier pass is invisible to later ones.
+    struct Scanner {
+        let c: [Character]
+        var used: [Bool]
         var found: [Located] = []
+
+        init(_ c: [Character]) {
+            self.c = c
+            used = [Bool](repeating: false, count: c.count)
+        }
+
+        func char(_ k: Int) -> Character? { c.indices.contains(k) ? c[k] : nil }
 
         func matches(_ w: String, at i: Int) -> Bool {
             let w = Array(w)
-            guard i + w.count <= c.count else { return false }
+            guard i >= 0, i + w.count <= c.count else { return false }
             return (0..<w.count).allSatisfy { c[i + $0] == w[$0] && !used[i + $0] }
         }
-        func take(_ i: Int, _ n: Int, _ fact: Fact?) {
+
+        mutating func take(_ i: Int, _ n: Int, _ fact: Fact?) {
             for k in i..<(i + n) { used[k] = true }
             if let fact { found.append(Located(fact: fact, range: i..<(i + n))) }
         }
-        func scan(_ words: [String], _ fact: (String) -> Fact?) {
+
+        mutating func scan(_ words: [String], _ fact: (String) -> Fact?) {
             var i = 0
             while i < c.count {
                 if let w = words.first(where: { matches($0, at: i) }) {
@@ -176,119 +202,162 @@ public enum FactCheck {
             }
         }
 
-        // Correction markers and non-negating words first, so their 不/别 aren't read as negations.
-        scan(EditGuard.correctionMarkers + notNegations, { _ in nil })
+        // MARK: Weekdays
 
-        // Weekdays (周三, 下周三, 礼拜五) before plain date words and numbers.
-        var i = 0
-        while i < c.count {
+        static let relativeWeeks: [Character: String] = ["下": "下周", "上": "上周", "这": "本周", "本": "本周"]
+
+        mutating func weekdays() {
+            var i = 0
+            while i < c.count { i = weekday(at: i) }
+        }
+
+        /// Reads 周三 / 下周三 at `i`; returns where to continue.
+        mutating func weekday(at i: Int) -> Int {
             var start = i
-            if let p = ["下", "上", "这", "本"].first(where: { matches($0, at: i) }),
+            if !used[i], let week = Self.relativeWeeks[c[i]],
                weekdayPrefixes.contains(where: { matches($0, at: i + 1) }) {
                 take(i, 1, nil)
-                found.append(Located(fact: Fact(.when, p == "下" ? "下周" : p == "上" ? "上周" : "本周"), range: i..<(i + 1)))
+                found.append(Located(fact: Fact(.when, week), range: i..<(i + 1)))
                 start = i + 1
             }
-            if let p = weekdayPrefixes.first(where: { matches($0, at: start) }) {
-                let d = start + p.count
-                if d < c.count, !used[d], let n = weekdayChars[c[d]] {
-                    take(start, d + 1 - start, Fact(.when, "W\(n)"))
-                    i = d + 1
-                    continue
-                }
-                if start != i { i = start + p.count; continue }
+            guard let p = weekdayPrefixes.first(where: { matches($0, at: start) }) else { return i + 1 }
+            let d = start + p.count
+            if d < c.count, !used[d], let n = weekdayChars[c[d]] {
+                take(start, d + 1 - start, Fact(.when, "W\(n)"))
+                return d + 1
             }
-            i += 1
-        }
-        scan(whenWords.map(\.0)) { w in Fact(.when, whenWords.first { $0.0 == w }!.1) }
-
-        // English words and identifiers: Python, Next.js, C++, Q3.
-        i = 0
-        while i < c.count {
-            guard !used[i], c[i].isASCII, c[i].isLetter else { i += 1; continue }
-            var j = i
-            while j < c.count, !used[j], c[j].isASCII, c[j].isLetter || c[j].isNumber || "._+#-".contains(c[j]) { j += 1 }
-            var end = j
-            while end > i, ".-_".contains(c[end - 1]) { end -= 1 }
-            take(i, end - i, Fact(.latin, String(c[i..<end]).lowercased()))
-            i = j
+            return start != i ? d : i + 1
         }
 
-        // Negations, before numbers so 千万别 isn't read as ten million. A-not-A questions
-        // (是不是, 有没有) ask rather than negate.
-        for k in c.indices where k > 0 && k + 1 < c.count && !used[k] && (c[k] == "不" || c[k] == "没") && c[k - 1] == c[k + 1] {
-            used[k] = true
-        }
-        scan(negations) { w in Fact(.negation, w) }
+        // MARK: English
 
-        // Numbers.
+        /// English words and identifiers: Python, Next.js, C++, Q3.
+        mutating func latinWords() {
+            var i = 0
+            while i < c.count {
+                guard !used[i], c[i].isASCII, c[i].isLetter else { i += 1; continue }
+                var j = i
+                while j < c.count, !used[j], c[j].isASCII, c[j].isLetter || c[j].isNumber || "._+#-".contains(c[j]) { j += 1 }
+                var end = j
+                while end > i, ".-_".contains(c[end - 1]) { end -= 1 }
+                take(i, end - i, Fact(.latin, String(c[i..<end]).lowercased()))
+                i = j
+            }
+        }
+
+        // MARK: Negations
+
+        /// A-not-A questions (是不是, 有没有) ask rather than negate.
+        mutating func negations() {
+            for k in c.indices where k > 0 && k + 1 < c.count && !used[k] && (c[k] == "不" || c[k] == "没") && c[k - 1] == c[k + 1] {
+                used[k] = true
+            }
+            scan(FactCheck.negations) { w in Fact(.negation, w) }
+        }
+
+        // MARK: Numbers
+
         func isListMarker(_ start: Int, _ end: Int) -> Bool {
             var k = start - 1
             while k >= 0, c[k] == " " || c[k] == "\t" { k -= 1 }
             guard k < 0 || c[k] == "\n" else { return false }
             return end < c.count && [".", "、", ")", "）"].contains(c[end])
         }
-        func afterOrdinal(_ start: Int) -> Bool { start > 0 && c[start - 1] == "第" }
-        func number(_ v: Double, _ range: Range<Int>) {
+
+        func afterOrdinal(_ start: Int) -> Bool { char(start - 1) == "第" }
+
+        mutating func number(_ v: Double, _ range: Range<Int>) {
             take(range.lowerBound, range.count, Fact(.number, format(v)))
         }
 
-        i = 0
-        while i < c.count {
-            guard !used[i], c[i].isASCII, c[i].isNumber else { i += 1; continue }
+        func isASCIIDigit(_ k: Int) -> Bool { char(k).map { $0.isASCII && $0.isNumber } ?? false }
+
+        mutating func arabicNumbers() {
+            var i = 0
+            while i < c.count {
+                guard !used[i], isASCIIDigit(i) else { i += 1; continue }
+                i = arabicNumber(at: i)
+            }
+        }
+
+        /// Reads 12, 3.5, 5万, 2千 at `i`; returns where it ends.
+        mutating func arabicNumber(at i: Int) -> Int {
             var j = i
-            while j < c.count, c[j].isASCII, c[j].isNumber { j += 1 }
-            if j + 1 < c.count, c[j] == ".", c[j + 1].isASCII, c[j + 1].isNumber {
+            while isASCIIDigit(j) { j += 1 }
+            if char(j) == ".", isASCIIDigit(j + 1) {
                 j += 1
-                while j < c.count, c[j].isASCII, c[j].isNumber { j += 1 }
+                while isASCIIDigit(j) { j += 1 }
             }
             var v = Double(String(c[i..<j])) ?? 0
             var end = j
-            if j < c.count, let u = bigUnits[c[j]] ?? (c[j] == "千" ? 1000 : nil) {
+            if let ch = char(j), let u = bigUnits[ch] ?? (ch == "千" ? 1000 : nil) {
                 v *= Double(u)
                 end = j + 1
             }
             if afterOrdinal(i) || isListMarker(i, j) { take(i, end - i, nil) } else { number(v, i..<end) }
-            i = end
+            return end
         }
 
-        i = 0
-        while i < c.count {
-            let isNumeral = { (k: Int) in !used[k] && (digits[c[k]] != nil || smallUnits[c[k]] != nil || bigUnits[c[k]] != nil) }
-            guard isNumeral(i) else {
-                if !used[i], c[i] == "半", i > 0, c[i - 1] == "点" { number(30, i..<(i + 1)) }
-                i += 1
-                continue
+        func isNumeral(_ k: Int) -> Bool {
+            !used[k] && (digits[c[k]] != nil || smallUnits[c[k]] != nil || bigUnits[c[k]] != nil)
+        }
+
+        mutating func chineseNumbers() {
+            var i = 0
+            while i < c.count {
+                guard isNumeral(i) else {
+                    // 三点半: the 半 is 30 minutes.
+                    if !used[i], c[i] == "半", char(i - 1) == "点" { number(30, i..<(i + 1)) }
+                    i += 1
+                    continue
+                }
+                var j = i
+                while j < c.count, isNumeral(j) { j += 1 }
+                chineseRun(i, j)
+                i = j
             }
-            var j = i
-            while j < c.count, isNumeral(j) { j += 1 }
+        }
+
+        mutating func chineseRun(_ i: Int, _ j: Int) {
             let run = Array(c[i..<j])
-            defer { i = j }
-            let hasDigit = run.contains { digits[$0] != nil || $0 == "十" }
-            let next: Character? = j < c.count ? c[j] : nil
-            let prev: Character? = i > 0 ? c[i - 1] : nil
-            if !hasDigit || numeralWords.contains(String(run)) || afterOrdinal(i)
-                || (run == ["十"] && next == "分" && prev != "点")
-                || (j - i == 1 && isListMarker(i, j))
-                || (j - i == 1 && prev.map { surnames.contains($0) } == true && !(next.map { oneUnits.contains($0) || $0 == "点" || $0 == "个" } ?? false)) {
-                take(i, j - i, nil)
-                continue
-            }
-            if run == ["一"] {
-                let time = next == "点" && prev.map { "午上晚早晨".contains($0) } == true
-                if !(next.map { oneUnits.contains($0) } ?? false) && !time { take(i, 1, nil); continue }
-            }
+            if !isNumber(run, i, j) { take(i, j - i, nil); return }
             let hasUnit = run.contains { smallUnits[$0] != nil || bigUnits[$0] != nil }
             if !hasUnit && run.count == 2 {
                 // 两三天, 七八个: an approximate range, two values.
                 number(Double(digits[run[0]]!), i..<(i + 1))
                 number(Double(digits[run[1]]!), (i + 1)..<j)
-                continue
+                return
             }
             if let v = chineseValue(run) { number(Double(v), i..<j) } else { take(i, j - i, nil) }
         }
 
-        return found.sorted { $0.range.lowerBound < $1.range.lowerBound }
+        /// Whether a numeral run reads as a value here, not as part of a word, name or list.
+        func isNumber(_ run: [Character], _ i: Int, _ j: Int) -> Bool {
+            let next = char(j), prev = char(i - 1)
+            guard run.contains(where: { digits[$0] != nil || $0 == "十" }),
+                  !numeralWords.contains(String(run)), !afterOrdinal(i),
+                  !(run == ["十"] && next == "分" && prev != "点")
+            else { return false }
+            if run.count == 1 {
+                if isListMarker(i, j) || isName(prev: prev, next: next) { return false }
+                if run == ["一"] { return isNumberOne(prev: prev, next: next) }
+            }
+            return true
+        }
+
+        /// 张三, 李四: a surname before a single numeral, unless a unit or 点/个 follows.
+        func isName(prev: Character?, next: Character?) -> Bool {
+            guard let prev, surnames.contains(prev) else { return false }
+            guard let next else { return true }
+            return !(oneUnits.contains(next) || next == "点" || next == "个")
+        }
+
+        /// A lone 一 is the number one before a unit (一号, 一块) or as a time (上午一点), not in 一个, 一下.
+        func isNumberOne(prev: Character?, next: Character?) -> Bool {
+            guard let next else { return false }
+            if oneUnits.contains(next) { return true }
+            return next == "点" && prev.map { "午上晚早晨".contains($0) } == true
+        }
     }
 
     static func chineseValue(_ run: [Character]) -> Int? {
@@ -322,49 +391,62 @@ public enum FactCheck {
     /// Indices of facts the speaker took back: for each run of correction markers, the fact nearest
     /// before it of each kind that is said again right after it (周三，不对，周四 → 周三).
     static func abandonedIndices(_ facts: [Located], in c: [Character]) -> Set<Int> {
-        var markers: [Range<Int>] = []
-        var i = 0
-        while i < c.count {
-            if let m = EditGuard.correctionMarkers.first(where: { w in
-                let w = Array(w)
-                return i + w.count <= c.count && Array(c[i..<(i + w.count)]) == w
-            }) {
-                let end = i + m.count
-                if let last = markers.last,
-                   c[last.upperBound..<i].allSatisfy({ boundaries.contains($0) || $0.isWhitespace || EditGuard.fillers.contains(String($0)) }) {
-                    markers[markers.count - 1] = last.lowerBound..<end
-                } else {
-                    markers.append(i..<end)
-                }
-                i = end
-            } else {
-                i += 1
-            }
-        }
-
-        func isGap(_ ch: Character) -> Bool { boundaries.contains(ch) || ch.isWhitespace }
+        let markers = markerRuns(in: c)
         var abandoned = Set<Int>()
-        for (n, m) in markers.enumerated() {
-            var s = m.lowerBound
-            while s > 0, isGap(c[s - 1]) { s -= 1 }
-            var from = s
+        for n in markers.indices {
             let floor = n > 0 ? markers[n - 1].upperBound : 0
-            while from > floor, !boundaries.contains(c[from - 1]) { from -= 1 }
-            var e = m.upperBound
-            while e < c.count, isGap(c[e]) { e += 1 }
-            var to = e
             let ceiling = n + 1 < markers.count ? markers[n + 1].lowerBound : c.count
-            while to < ceiling, !boundaries.contains(c[to]) { to += 1 }
-
-            let after = Set(facts.filter { $0.range.lowerBound >= e && $0.range.upperBound <= to && $0.fact.kind != .negation }.map(\.fact.kind))
-            for kind in after {
-                if let k = facts.indices.last(where: {
-                    facts[$0].fact.kind == kind && facts[$0].range.lowerBound >= from && facts[$0].range.upperBound <= s
-                }) {
+            let (before, after) = clauses(around: markers[n], floor: floor, ceiling: ceiling, in: c)
+            let saidAgain = Set(facts.filter { within($0.range, after) && $0.fact.kind != .negation }.map(\.fact.kind))
+            for kind in saidAgain {
+                if let k = facts.indices.last(where: { facts[$0].fact.kind == kind && within(facts[$0].range, before) }) {
                     abandoned.insert(k)
                 }
             }
         }
         return abandoned
+    }
+
+    static func within(_ r: Range<Int>, _ bounds: ClosedRange<Int>) -> Bool {
+        r.lowerBound >= bounds.lowerBound && r.upperBound <= bounds.upperBound
+    }
+
+    /// Correction markers in `c`, with markers separated only by punctuation or fillers
+    /// (不对，不对，嗯，是) merged into one run.
+    static func markerRuns(in c: [Character]) -> [Range<Int>] {
+        var markers: [Range<Int>] = []
+        var i = 0
+        while i < c.count {
+            guard let m = EditGuard.correctionMarkers.first(where: { w in
+                let w = Array(w)
+                return i + w.count <= c.count && Array(c[i..<(i + w.count)]) == w
+            }) else { i += 1; continue }
+            let end = i + m.count
+            if let last = markers.last,
+               c[last.upperBound..<i].allSatisfy({ boundaries.contains($0) || $0.isWhitespace || EditGuard.fillers.contains(String($0)) }) {
+                markers[markers.count - 1] = last.lowerBound..<end
+            } else {
+                markers.append(i..<end)
+            }
+            i = end
+        }
+        return markers
+    }
+
+    /// The clause right before a marker run and the one right after it, each stopping at a sentence
+    /// boundary or at the neighbouring marker run.
+    static func clauses(
+        around m: Range<Int>, floor: Int, ceiling: Int, in c: [Character]
+    ) -> (before: ClosedRange<Int>, after: ClosedRange<Int>) {
+        func isGap(_ ch: Character) -> Bool { boundaries.contains(ch) || ch.isWhitespace }
+        var s = m.lowerBound
+        while s > 0, isGap(c[s - 1]) { s -= 1 }
+        var from = s
+        while from > floor, !boundaries.contains(c[from - 1]) { from -= 1 }
+        var e = m.upperBound
+        while e < c.count, isGap(c[e]) { e += 1 }
+        var to = e
+        while to < ceiling, !boundaries.contains(c[to]) { to += 1 }
+        return (from...s, e...to)
     }
 }
