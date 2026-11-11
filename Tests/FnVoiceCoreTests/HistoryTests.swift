@@ -105,6 +105,39 @@ import Testing
         #expect(report.contains("| current refinement (re-run) |"))
     }
 
+    @Test func reportSplitsLatencyByLLMAndCountsSwapsAndRerunOutcomes() {
+        var off = record(raw: "a", pasted: "a", final: nil, llm: .off, total: 200)
+        off.replaced = "A"
+        let skipped = record(raw: "b", pasted: "b", final: nil, llm: .skipped, total: 400)
+        var sent = record(raw: "c", pasted: "c", final: nil, llm: .ok, total: 1500)
+        sent.llmMs = 1100
+        let rows = [
+            LiveEval.Row(record: off, rerunLLM: .ok), LiveEval.Row(record: skipped, rerunLLM: .guardrail),
+            LiveEval.Row(record: sent, rerunLLM: .skipped),
+        ]
+        let report = LiveEval.markdown(rows: rows, header: "h")
+        #expect(report.contains("Fn-up → typed, p50: 400 ms without LLM (n=2), 1500 ms with LLM (n=1)."))
+        #expect(report.contains("LLM answers swapped in after typing: 1; changed answers that could not be swapped in: 0."))
+    }
+
+    @Test func reportListsWhatTheRerunStillGetsWrong() {
+        let rows = [
+            // Wrong back then and still wrong now.
+            LiveEval.Row(record: record(raw: "配森", pasted: "配森", final: "Python"), rerun: "派森", rerunLLM: .ok),
+            // Wrong back then, right now: a fix, not still wrong.
+            LiveEval.Row(record: record(raw: "杰森", pasted: "杰森", final: "JSON"), rerun: "JSON", rerunLLM: .timeout),
+            // Right back then, wrong now: a regression, listed once under regressions.
+            LiveEval.Row(record: record(raw: "好的", pasted: "好的", final: "好的"), rerun: "好得", rerunLLM: .error),
+            // Not re-run: no outcome to count.
+            LiveEval.Row(record: record(raw: "嗯", pasted: "嗯", final: "嗯")),
+        ]
+        let report = LiveEval.markdown(rows: rows, header: "h")
+        #expect(report.contains("Re-run: 3 sent to the LLM, guardrail 0, timeout 1, error 1;"))
+        let stillWrong = report.components(separatedBy: "### Still wrong after the re-run").last ?? ""
+        #expect(stillWrong.contains("派森"))
+        #expect(!stillWrong.contains("杰森") && !stillWrong.contains("好得"))
+    }
+
     @Test func reportWithoutObservedFinalsStillGivesLiveStats() {
         let rows = [LiveEval.Row(record: record(raw: "a", pasted: "a", final: nil, total: 350))]
         let report = LiveEval.markdown(rows: rows, header: "h")

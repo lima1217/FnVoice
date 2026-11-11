@@ -23,6 +23,15 @@ import Testing
         #expect(values("发给张三，抄送李四和王五", .number).isEmpty)
     }
 
+    @Test func aTextMayOpenWithACorrectionMarker() {
+        #expect(FactCheck.check(source: "不对，周四开会", output: "周四开会").passed)
+    }
+
+    @Test func aLoneOneIsANumberOnlyBeforeAUnitOrAsAnHour() {
+        #expect(values("一号到，花了一块，上午一点", .number) == ["1", "1", "1"])
+        #expect(values("好一点，看一个，统一", .number).isEmpty)
+    }
+
     @Test func readsDatesAndNegations() {
         #expect(values("下周三下午，礼拜五也行", .when) == ["下周", "W3", "下午", "W5"])
         #expect(values("周五别发版，也不用等我，没有通过", .negation).count == 3)

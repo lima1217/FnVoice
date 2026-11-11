@@ -190,6 +190,18 @@ struct SplitMix: RandomNumberGenerator {
         #expect(ErrorRate.normalize(r.text) == ErrorRate.normalize(raw))
     }
 
+    @Test func aCorrectedTermMovedIntoPlaceIsAccepted() {
+        // The final version (Memcached) was deleted after the marker and moved over the abandoned one.
+        let review = EditGuard().review(original: "我们用Redis做缓存不对应该是用Memcached", candidate: "我们用Memcached做缓存。")
+        #expect(review == .init(text: "我们用Memcached做缓存。", reverted: 0, rejection: nil))
+    }
+
+    @Test func upToTwoMissingWordsAreKeptAndMoreArePutBack() {
+        let g = EditGuard()
+        #expect(g.review(original: "我明天去开会", candidate: "我明天下午去开会") == .init(text: "我明天下午去开会", reverted: 0, rejection: nil))
+        #expect(g.review(original: "我明天去开会", candidate: "我明天晚上八去开会") == .init(text: "我明天去开会", reverted: 1, rejection: nil))
+    }
+
     @Test func mostlyPutBackIsARewrite() {
         // Abandoned span too long to be a correction: putting it back would be most of the text.
         let raw = "我们今天上午先去公司把所有的会议都开完然后下午再去见客户不对"
@@ -243,6 +255,12 @@ struct SplitMix: RandomNumberGenerator {
         let r = Refiner(client: StubClient { throw LLMError.timeout })
         let out = await r.refine("原文")
         #expect(out == RefineOutcome(text: "原文", usedLLM: false, fallbackReason: "Timed out", status: .timeout))
+    }
+
+    @Test func fallsBackOnAnyOtherError() async {
+        struct Broken: Error {}
+        let out = await Refiner(client: StubClient { throw Broken() }).refine("原文")
+        #expect(out.text == "原文" && !out.usedLLM && out.status == .error)
     }
 
     @Test func fallsBackOnCancellation() async {
