@@ -75,6 +75,13 @@ import Testing
         #expect(RefinementGate.shouldRefine("周三不对周四开会"))
         #expect(!RefinementGate.shouldRefine("那个文件就是他发的"))
     }
+
+    @Test func scopeAllSendsPlainChineseButNeverBlankText() {
+        #expect(RefinementGate.shouldRefine("今天天气不错", scope: .all))
+        #expect(!RefinementGate.shouldRefine("今天天气不错", scope: .englishOnly))
+        #expect(RefinementGate.shouldRefine("我在用配森写", scope: .englishOnly))
+        #expect(!RefinementGate.shouldRefine(" \n", scope: .all))
+    }
 }
 
 @Suite struct VocabularyPromptTests {
