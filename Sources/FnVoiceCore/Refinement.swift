@@ -227,21 +227,11 @@ public struct EditGuard: Sendable {
 
     /// Like `hunks`, with positions. Neighbouring hunks are always separated by at least one equal token.
     public static func alignedHunks(_ a: [String], _ b: [String]) -> [AlignedHunk] {
-        let n = a.count, m = b.count
-        var d = [[Int]](repeating: [Int](repeating: 0, count: m + 1), count: n + 1)
-        for i in 0...n { d[i][0] = i }
-        for j in 0...m { d[0][j] = j }
-        if n > 0 && m > 0 {
-            for i in 1...n {
-                for j in 1...m {
-                    d[i][j] = min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] == b[j - 1] ? 0 : 1))
-                }
-            }
-        }
+        let d = editDistances(a, b)
         var hunks: [AlignedHunk] = []
         // Walking backwards: the current hunk ends (exclusive) at endI/endJ.
         var endI: Int?, endJ: Int?
-        var i = n, j = m
+        var i = a.count, j = b.count
         func close() {
             if let ei = endI, let ej = endJ, ei > i || ej > j { hunks.append(AlignedHunk(a: i..<ei, b: j..<ej)) }
             endI = nil; endJ = nil
@@ -261,6 +251,20 @@ public struct EditGuard: Sendable {
         }
         close()
         return hunks.reversed()
+    }
+
+    /// `d[i][j]`: edit distance between the first i tokens of `a` and the first j of `b`.
+    static func editDistances(_ a: [String], _ b: [String]) -> [[Int]] {
+        let n = a.count, m = b.count
+        var d = [[Int]](repeating: [Int](repeating: 0, count: m + 1), count: n + 1)
+        for i in 0...n { d[i][0] = i }
+        for j in 0...m { d[0][j] = j }
+        for i in stride(from: 1, through: n, by: 1) {
+            for j in stride(from: 1, through: m, by: 1) {
+                d[i][j] = min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] == b[j - 1] ? 0 : 1))
+            }
+        }
+        return d
     }
 
     /// Sounds and tics the cleanup may drop anywhere. Longest first so 那个 is removed before 那.
@@ -349,11 +353,17 @@ public struct EditGuard: Sendable {
     ) -> Bool {
         let text = deleted.joined()
         let rest = strippingFillers(text)
-        if rest.isEmpty { return true }
+        return rest.isEmpty
+            || isStutter(rest, before: before, after: after, splitByPunctuation: splitByPunctuation)
+            || isSelfCorrection([text, rest], before: before, after: after, candidate: candidate)
+    }
 
-        // Stutter: the deleted text repeats the unit right next to it (我我|我觉得, 觉得|觉得).
-        // One doubled character is often a real word (看看, 试试, 谢谢), so it only counts when
-        // it's a function word people stumble on, or punctuation split the copies (发现。现它).
+    /// Stutter: the deleted text repeats the unit right next to it (我我|我觉得, 觉得|觉得).
+    /// One doubled character is often a real word (看看, 试试, 谢谢), so it only counts when
+    /// it's a function word people stumble on, or punctuation split the copies (发现。现它).
+    static func isStutter(
+        _ rest: String, before: ArraySlice<String>, after: ArraySlice<String>, splitByPunctuation: Bool
+    ) -> Bool {
         for len in 1...4 {
             for unit in [after.prefix(len).joined(), before.suffix(len).joined()] where !unit.isEmpty {
                 guard rest.count % unit.count == 0, String(repeating: unit, count: rest.count / unit.count) == rest
@@ -361,12 +371,17 @@ public struct EditGuard: Sendable {
                 if rest.count > 1 || unit.count > 1 || stutterChars.contains(rest) || splitByPunctuation { return true }
             }
         }
+        return false
+    }
 
-        // Self-correction: abandoned words, a marker, then the final version. The final version
-        // either follows the deleted span (周三不对|周四开会) or was itself deleted here and moved
-        // into place in the candidate (我明天去北京我是说后天 → 我后天去北京). Markers are looked
-        // up in the text before fillers are stripped too, since 哦不 contains the filler 哦.
-        for source in [text, rest] {
+    /// Self-correction: abandoned words, a marker, then the final version. The final version
+    /// either follows the deleted span (周三不对|周四开会) or was itself deleted here and moved
+    /// into place in the candidate (我明天去北京我是说后天 → 我后天去北京). Markers are looked
+    /// up in the text before fillers are stripped too, since 哦不 contains the filler 哦.
+    static func isSelfCorrection(
+        _ sources: [String], before: ArraySlice<String>, after: ArraySlice<String>, candidate: String
+    ) -> Bool {
+        for source in sources {
             for marker in correctionMarkers {
                 guard let r = source.range(of: marker, options: .backwards) else { continue }
                 let abandoned = strippingFillers(String(source[..<r.lowerBound]))
