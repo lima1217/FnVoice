@@ -78,17 +78,17 @@ struct SplitMix: RandomNumberGenerator {
     }
 
     @Test func acceptsTypicalTermFixes() {
-        #expect(guardrail.rejection(original: "配森", candidate: "Python") == nil)
-        #expect(guardrail.rejection(original: "我在用配森写一个杰森解析器", candidate: "我在用Python写一个JSON解析器") == nil)
-        #expect(guardrail.rejection(original: "我在写带码", candidate: "我在写代码") == nil)
-        #expect(guardrail.rejection(original: "same text", candidate: "same text") == nil)
-        #expect(guardrail.rejection(original: "open the java script file", candidate: "open the JavaScript file") == nil)
+        #expect(guardrail.review(original: "配森", candidate: "Python").rejection == nil)
+        #expect(guardrail.review(original: "我在用配森写一个杰森解析器", candidate: "我在用Python写一个JSON解析器").rejection == nil)
+        #expect(guardrail.review(original: "我在写带码", candidate: "我在写代码").rejection == nil)
+        #expect(guardrail.review(original: "same text", candidate: "same text").rejection == nil)
+        #expect(guardrail.review(original: "open the java script file", candidate: "open the JavaScript file").rejection == nil)
     }
 
     @Test func rejectsRewrites() {
-        #expect(guardrail.rejection(original: "今天下午三点开会讨论一下接口设计", candidate: "会议定于今日15:00，议题：API设计。") != nil)
-        #expect(guardrail.rejection(original: "好的", candidate: "好的，我明白了，我会马上处理这个问题并及时反馈给你") != nil)
-        #expect(guardrail.rejection(original: "原文", candidate: "") != nil)
+        #expect(guardrail.review(original: "今天下午三点开会讨论一下接口设计", candidate: "会议定于今日15:00，议题：API设计。").rejection != nil)
+        #expect(guardrail.review(original: "好的", candidate: "好的，我明白了，我会马上处理这个问题并及时反馈给你").rejection != nil)
+        #expect(guardrail.review(original: "原文", candidate: "").rejection != nil)
     }
 
     @Test func droppedClauseIsPutBackAndTheRestKept() {
@@ -130,7 +130,7 @@ struct SplitMix: RandomNumberGenerator {
     @Test func manyTermFixesInOneSentenceAreAccepted() {
         let raw = "用配森读杰森然后推到吉特哈布再用加瓦写后端"
         let fixed = "用Python读JSON然后推到GitHub再用Java写后端"
-        #expect(guardrail.rejection(original: raw, candidate: fixed) == nil)
+        #expect(guardrail.review(original: raw, candidate: fixed).rejection == nil)
     }
 
     @Test func hunksGroupContiguousChanges() {
@@ -141,8 +141,8 @@ struct SplitMix: RandomNumberGenerator {
     }
 
     @Test func punctuationChangesAreFree() {
-        #expect(guardrail.rejection(original: "今天天气不错我们出去走走吧", candidate: "今天天气不错，我们出去走走吧。") == nil)
-        #expect(guardrail.rejection(original: "你好.你吃了吗", candidate: "你好。你吃了吗？") == nil)
+        #expect(guardrail.review(original: "今天天气不错我们出去走走吧", candidate: "今天天气不错，我们出去走走吧。").rejection == nil)
+        #expect(guardrail.review(original: "你好.你吃了吗", candidate: "你好。你吃了吗？").rejection == nil)
     }
 
     @Test(arguments: [
@@ -157,7 +157,7 @@ struct SplitMix: RandomNumberGenerator {
         ("我们用Redis做缓存不对应该是用Memcached", "我们用Memcached做缓存"),
     ])
     func disfluencyCleanupIsAccepted(raw: String, cleaned: String) {
-        #expect(guardrail.rejection(original: raw, candidate: cleaned) == nil)
+        #expect(guardrail.review(original: raw, candidate: cleaned).rejection == nil)
     }
 
     // The diff may pair the 是 of 应该是 with an earlier 是 (报价是), so the deleted span arrives as
@@ -205,11 +205,11 @@ struct SplitMix: RandomNumberGenerator {
     @Test func mostlyPutBackIsARewrite() {
         // Abandoned span too long to be a correction: putting it back would be most of the text.
         let raw = "我们今天上午先去公司把所有的会议都开完然后下午再去见客户不对"
-        #expect(guardrail.rejection(original: raw, candidate: "然后下午再去见客户") != nil)
+        #expect(guardrail.review(original: raw, candidate: "然后下午再去见客户").rejection != nil)
     }
 
     @Test func translationIsRejected() {
-        #expect(guardrail.rejection(original: "我今天很开心因为天气很好", candidate: "I am happy today because the weather is nice") != nil)
+        #expect(guardrail.review(original: "我今天很开心因为天气很好", candidate: "I am happy today because the weather is nice").rejection != nil)
     }
 }
 

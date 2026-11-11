@@ -532,10 +532,6 @@ public struct EditGuard: Sendable {
         return out.map(\.text).joined()
     }
 
-    /// Returns a reason when the candidate should be discarded as a whole, nil when it is usable.
-    public func rejection(original: String, candidate: String) -> String? {
-        review(original: original, candidate: candidate).rejection
-    }
 }
 
 /// Decides whether a transcript is worth an LLM round trip. In the eval, recognition errors were
