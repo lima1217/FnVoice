@@ -308,23 +308,8 @@ final class AnalyzerAudioSink: @unchecked Sendable {
         if converter?.inputFormat != buffer.format {
             converter = AVAudioConverter(from: buffer.format, to: target) // also after an audio route change
         }
-        guard let converter else { return }
-        let ratio = target.sampleRate / buffer.format.sampleRate
-        let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 16
-        guard let out = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: capacity) else { return }
-        let once = OnceFlag() // hand the converter this one buffer, then report "no more for now"
-        // The input block runs synchronously inside convert(), on this thread.
-        nonisolated(unsafe) let source = buffer
-        var error: NSError?
-        converter.convert(to: out, error: &error) { _, status in
-            guard once.claim() else {
-                status.pointee = .noDataNow
-                return nil
-            }
-            status.pointee = .haveData
-            return source
-        }
-        if error == nil, out.frameLength > 0 { continuation.yield(AnalyzerInput(buffer: out)) }
+        guard let out = converter?.convertWhole(buffer) else { return }
+        continuation.yield(AnalyzerInput(buffer: out))
     }
 
     static func copy(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
@@ -444,5 +429,28 @@ final class AnalyzerAudioSink: @unchecked Sendable {
         }
         try await analyzer.start(inputAudioFile: file, finishAfterFile: true)
         return try await collector.value
+    }
+}
+
+extension AVAudioConverter {
+    /// Converts one whole buffer to `outputFormat`, sample-rate change included; nil when the
+    /// conversion failed or produced nothing.
+    func convertWhole(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+        let ratio = outputFormat.sampleRate / buffer.format.sampleRate
+        let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 16
+        guard let out = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: capacity) else { return nil }
+        let once = OnceFlag() // hand the converter this one buffer, then report "no more for now"
+        // The input block runs synchronously inside convert(), on this thread.
+        nonisolated(unsafe) let source = buffer
+        var error: NSError?
+        convert(to: out, error: &error) { _, status in
+            guard once.claim() else {
+                status.pointee = .noDataNow
+                return nil
+            }
+            status.pointee = .haveData
+            return source
+        }
+        return error == nil && out.frameLength > 0 ? out : nil
     }
 }

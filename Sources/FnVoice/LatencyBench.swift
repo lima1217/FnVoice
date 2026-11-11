@@ -136,20 +136,7 @@ import Speech
                 session.yield(chunk)
                 continue
             }
-            let capacity = AVAudioFrameCount(Double(chunk.frameLength) * session.format.sampleRate / source.sampleRate) + 16
-            guard let out = AVAudioPCMBuffer(pcmFormat: session.format, frameCapacity: capacity) else { break }
-            let once = OnceFlag()
-            nonisolated(unsafe) let input = chunk
-            var error: NSError?
-            converter.convert(to: out, error: &error) { _, status in
-                guard once.claim() else {
-                    status.pointee = .noDataNow
-                    return nil
-                }
-                status.pointee = .haveData
-                return input
-            }
-            if error == nil, out.frameLength > 0 { session.yield(out) }
+            if let out = converter.convertWhole(chunk) { session.yield(out) }
         }
     }
 
