@@ -1,6 +1,5 @@
 import AVFoundation
 import FnVoiceCore
-import ObjCTry
 import Speech
 
 enum CaptureError: Error {
@@ -9,6 +8,7 @@ enum CaptureError: Error {
     case noInputDevice
     case engine(String)
     case modelDownloading(String)
+    case micTimeout
 
     var userMessage: String {
         switch self {
@@ -17,6 +17,7 @@ enum CaptureError: Error {
         case .noInputDevice: "No microphone input"
         case .engine(let msg): "Audio error: \(msg)"
         case .modelDownloading(let id): "Downloading the \(id) speech model…"
+        case .micTimeout: "麦克风没有响应，请再按一次"
         }
     }
 }
@@ -44,18 +45,6 @@ final class AudioSink: @unchecked Sendable {
         guard let channel = buffer.floatChannelData?[0] else { return }
         levels.set(LevelMeter.level(UnsafeBufferPointer(start: channel, count: Int(buffer.frameLength))))
     }
-
-    /// AVFAudio raises an Objective-C exception (not a Swift error) when `format` no longer
-    /// matches the hardware; caught here so it never unwinds through Swift frames.
-    static func installTap(on node: AVAudioInputNode, format: AVAudioFormat, sink: AudioSink) throws {
-        var error: NSError?
-        let ok = FNTryObjC({
-            node.installTap(onBus: 0, bufferSize: 1024, format: format) { @Sendable buffer, _ in
-                sink.consume(buffer)
-            }
-        }, &error)
-        if !ok { throw CaptureError.engine(error?.localizedDescription ?? "installTap failed") }
-    }
 }
 
 @MainActor final class SpeechCapture {
@@ -63,10 +52,9 @@ final class AudioSink: @unchecked Sendable {
     var levels: LevelBox { sink.levels }
     var onPartial: ((String) -> Void)?
 
-    private var engine = AVAudioEngine()
+    private let mic = MicInput()
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var task: SFSpeechRecognitionTask?
-    private var configObserver: NSObjectProtocol?
     private var generation = 0
     private var latestText = ""
     /// A recognition error worth telling the user about (not "no speech detected").
@@ -77,7 +65,11 @@ final class AudioSink: @unchecked Sendable {
     private(set) var partialsDuringCapture = 0
     private var capturing = false
 
-    func start(language: DictationLanguage, vocabulary: [String]) throws {
+    init() {
+        mic.onConfigurationChange = { [weak self] in self?.rebuildEngine() }
+    }
+
+    func start(language: DictationLanguage, vocabulary: [String]) async throws {
         cancel()
         generation += 1
         let gen = generation
@@ -108,9 +100,9 @@ final class AudioSink: @unchecked Sendable {
         Log.asr.info("recognition started lang=\(language.rawValue, privacy: .public) onDevice=\(self.isOnDevice)")
 
         do {
-            try startEngine()
+            try await startEngine()
         } catch {
-            cancel()
+            if gen == generation { cancel() } // a newer start owns the engine otherwise
             throw error
         }
     }
@@ -184,39 +176,17 @@ final class AudioSink: @unchecked Sendable {
         }
     }
 
-    private func startEngine(retry: Bool = true) throws {
-        let input = engine.inputNode
-        let format = input.outputFormat(forBus: 0)
-        guard format.sampleRate > 0, format.channelCount > 0 else { throw CaptureError.noInputDevice }
-        do {
-            try AudioSink.installTap(on: input, format: format, sink: sink)
-        } catch where retry {
-            // Stale cached format after a device switch while idle; a fresh engine reads the
-            // current one (see AnalyzerCapture.startAudio).
-            Log.audio.notice("tap refused (\(String(describing: error), privacy: .public)); retrying on a fresh engine")
-            engine = AVAudioEngine()
-            return try startEngine(retry: false)
-        }
-        engine.prepare()
-        do {
-            try engine.start()
-        } catch {
-            input.removeTap(onBus: 0)
-            throw CaptureError.engine(error.localizedDescription)
-        }
-        configObserver = NotificationCenter.default.addObserver(
-            forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main
-        ) { [self] _ in
-            MainActor.assumeIsolated { self.rebuildEngine() }
-        }
+    private var tap: @Sendable (AVAudioPCMBuffer) -> Void {
+        { [sink] buffer in sink.consume(buffer) }
+    }
+
+    private func startEngine() async throws {
+        let format = try await mic.start(tap: tap)
         Log.audio.info("engine started \(format.sampleRate, privacy: .public)Hz ch=\(format.channelCount, privacy: .public)")
     }
 
     private func stopEngine() {
-        if let configObserver { NotificationCenter.default.removeObserver(configObserver) }
-        configObserver = nil
-        if engine.isRunning { engine.stop() }
-        engine.inputNode.removeTap(onBus: 0)
+        mic.stop()
     }
 
     /// The input device or its format changed (AirPods switching to HFP, mic unplugged).
@@ -225,13 +195,10 @@ final class AudioSink: @unchecked Sendable {
     private func rebuildEngine() {
         guard request != nil else { return }
         Log.audio.notice("audio configuration changed; rebuilding engine")
-        stopEngine()
-        engine = AVAudioEngine()
-        do {
-            try startEngine()
-        } catch {
-            Log.audio.error("rebuild failed: \(String(describing: error), privacy: .public)")
-            request?.endAudio()
+        let gen = generation
+        mic.restart(tap: tap) { [weak self] _ in
+            guard let self, gen == self.generation else { return }
+            self.request?.endAudio()
         }
     }
 

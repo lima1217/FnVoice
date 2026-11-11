@@ -422,7 +422,7 @@ import ServiceManagement
                     Log.asr.notice("analyzer model not installed for \(language.rawValue, privacy: .public); using legacy for now")
                     self.active = self.legacyEngine
                     self.capsule.show(levels: self.legacyEngine.levels, locked: locked)
-                    try self.legacyEngine.start(language: language, vocabulary: vocabulary)
+                    try await self.legacyEngine.start(language: language, vocabulary: vocabulary)
                 }
             } catch let e as CaptureError {
                 self.send(.captureFailed(session: s, message: e.userMessage))
