@@ -414,14 +414,33 @@ public struct EditGuard: Sendable {
         // Fillers are set aside on both sides like punctuation: dropping them is free, and the diff
         // can't split 一个那个 into an odd-looking 个那 deletion.
         let ca = Self.contentIndices(pa), cb = Self.contentIndices(pb)
-        let a = ca.map { pa[$0].key }, b = cb.map { pb[$0].key }
-        func reject(_ reason: String) -> Review { Review(text: original, reverted: 0, rejection: reason) }
-        if b.isEmpty { return reject("empty output") }
-        let n = Double(max(a.count, 1))
-        let joined = b.joined()
+        let b = cb.map { pb[$0].key }
+        if b.isEmpty { return Review(text: original, reverted: 0, rejection: "empty output") }
+        let t = tally(Side(pieces: pa, content: ca), against: b)
+        if let reason = overBudget(t, tokens: ca.count) { return Review(text: original, reverted: 0, rejection: reason) }
+        if t.putBack.isEmpty { return Review(text: candidate, reverted: 0, rejection: nil) }
+        let text = Self.splice(t.putBack, from: Side(pieces: pa, content: ca), into: Side(pieces: pb, content: cb))
+        return Review(text: text, reverted: t.putBack.count, rejection: nil)
+    }
 
+    /// One text's pieces and the indices of those compared word by word.
+    struct Side {
+        var pieces: [Piece]
+        var content: [Int]
+        var keys: [String] { content.map { pieces[$0].key } }
+    }
+
+    /// What the candidate's changes add up to: kept fixes against the edit and length budgets,
+    /// refused changes against the revert budget.
+    struct Tally {
         var cost = 0, delta = 0, revertedCost = 0
         var putBack: [AlignedHunk] = []
+    }
+
+    func tally(_ original: Side, against b: [String]) -> Tally {
+        let a = original.keys, ca = original.content, pa = original.pieces
+        let joined = b.joined()
+        var t = Tally()
         for h in Self.alignedHunks(a, b) {
             let hunk = Hunk(deleted: Array(a[h.a]), inserted: Array(b[h.b]))
             // Punctuation right next to the deleted span in the original (between it and its neighbours).
@@ -434,33 +453,41 @@ public struct EditGuard: Sendable {
                     splitByPunctuation: split) {
                 continue
             }
-            // Kept as a word fix: a term fix, a small swap, or one or two missing words. A plain
-            // deletion that isn't disfluency is never a recognition fix, so it is always put back.
-            let keep = hunk.isTermFix
-                || (!hunk.deleted.isEmpty && !hunk.inserted.isEmpty && max(hunk.deleted.count, hunk.inserted.count) <= maxKeptHunk)
-                || (hunk.deleted.isEmpty && hunk.inserted.count <= absoluteSlack)
-            if keep {
-                cost += hunk.cost
+            if isKeptAsWordFix(hunk) {
+                t.cost += hunk.cost
                 // Term fixes legitimately shrink the token count (配森 → Python), so only other hunks count here.
-                if !hunk.isTermFix { delta += hunk.inserted.count - hunk.deleted.count }
+                if !hunk.isTermFix { t.delta += hunk.inserted.count - hunk.deleted.count }
             } else {
-                revertedCost += max(hunk.deleted.count, hunk.inserted.count)
-                putBack.append(h)
+                t.revertedCost += max(hunk.deleted.count, hunk.inserted.count)
+                t.putBack.append(h)
             }
         }
-        if revertedCost > absoluteSlack && Double(revertedCost) / n > maxRevertRatio {
-            return reject("rewrite: \(String(format: "%.2f", Double(revertedCost) / n)) put back > \(maxRevertRatio)")
-        }
-        if cost > absoluteSlack && Double(cost) / n > maxEditRatio {
-            return reject("edit ratio \(String(format: "%.2f", Double(cost) / n)) > \(maxEditRatio)")
-        }
-        delta = abs(delta)
-        if delta > absoluteSlack && Double(delta) / n > maxLengthChangeRatio {
-            return reject("length change \(String(format: "%.2f", Double(delta) / n)) > \(maxLengthChangeRatio)")
-        }
-        if putBack.isEmpty { return Review(text: candidate, reverted: 0, rejection: nil) }
+        return t
+    }
 
-        // Rebuild from the candidate's pieces, splicing original pieces over each refused change.
+    /// Kept as a word fix: a term fix, a small swap, or one or two missing words. A plain deletion
+    /// that isn't disfluency is never a recognition fix, so it is always put back.
+    func isKeptAsWordFix(_ hunk: Hunk) -> Bool {
+        if hunk.isTermFix { return true }
+        if hunk.deleted.isEmpty { return hunk.inserted.count <= absoluteSlack }
+        return !hunk.inserted.isEmpty && max(hunk.deleted.count, hunk.inserted.count) <= maxKeptHunk
+    }
+
+    /// The reason the answer as a whole is a rewrite, nil when it is within every budget.
+    func overBudget(_ t: Tally, tokens: Int) -> String? {
+        let n = Double(max(tokens, 1))
+        func over(_ amount: Int, _ limit: Double) -> String? {
+            amount > absoluteSlack && Double(amount) / n > limit ? String(format: "%.2f", Double(amount) / n) : nil
+        }
+        if let r = over(t.revertedCost, maxRevertRatio) { return "rewrite: \(r) put back > \(maxRevertRatio)" }
+        if let r = over(t.cost, maxEditRatio) { return "edit ratio \(r) > \(maxEditRatio)" }
+        if let r = over(abs(t.delta), maxLengthChangeRatio) { return "length change \(r) > \(maxLengthChangeRatio)" }
+        return nil
+    }
+
+    /// Rebuilds the candidate with original pieces spliced over each refused change.
+    static func splice(_ putBack: [AlignedHunk], from original: Side, into candidate: Side) -> String {
+        let pa = original.pieces, ca = original.content, pb = candidate.pieces, cb = candidate.content
         var out = pb
         for h in putBack.reversed() {
             let removed: Range<Int>
@@ -484,10 +511,10 @@ public struct EditGuard: Sendable {
                 removed = cb[h.b.lowerBound]..<(cb[h.b.upperBound - 1] + 1)
                 restored = h.a.isEmpty ? [] : Array(pa[ca[h.a.lowerBound]...ca[h.a.upperBound - 1]])
             }
-            restored.removeAll { Self.restoredFillers.contains($0.key) }
+            restored.removeAll { restoredFillers.contains($0.key) }
             out.replaceSubrange(removed, with: restored)
         }
-        return Review(text: out.map(\.text).joined(), reverted: putBack.count, rejection: nil)
+        return out.map(\.text).joined()
     }
 
     /// Returns a reason when the candidate should be discarded as a whole, nil when it is usable.
