@@ -61,43 +61,43 @@ public struct FnKeyTracker: Sendable {
 
     public mutating func handle(_ e: KeyEventInput, dictationCancellable: Bool) -> (KeyDisposition, KeyAction?) {
         switch e.kind {
+        case .flagsChanged where Self.isFnKey(e.keyCode): fnChanged(down: e.fnFlag, otherModifiers: e.otherModifiers)
         case .flagsChanged:
-            if Self.isFnKey(e.keyCode) {
-                switch (fn, e.fnFlag) {
-                case (.released, true):
-                    let claimed = !e.otherModifiers
-                    fn = .held(claimed: claimed)
-                    return claimed ? (.suppress, .fnDown) : (.passThrough, nil)
-                case (.held(let claimed), false):
-                    fn = .released
-                    return claimed ? (.suppress, .fnUp) : (.passThrough, nil)
-                case (.held(let claimed), true):
-                    return (claimed ? .suppress : .passThrough, nil)
-                case (.released, false):
-                    return (.passThrough, nil)
-                }
-            }
             // A modifier other than Fn changed while Fn is claimed: treat as a combo (e.g. Fn+Shift).
-            if claimed && e.otherModifiers { return (.passThrough, .comboKey) }
-            return (.passThrough, nil)
-
-        case .keyDown:
-            if e.keyCode == Self.escapeKeyCode && dictationCancellable {
-                escapeSuppressed = true
-                return (.suppress, .escape)
-            }
-            if Self.isFnKey(e.keyCode) { return (fnHeld ? .suppress : .passThrough, nil) }
-            if claimed { return (.passThrough, .comboKey) }
-            return (.passThrough, nil)
-
-        case .keyUp:
-            if e.keyCode == Self.escapeKeyCode && escapeSuppressed {
-                escapeSuppressed = false
-                return (.suppress, nil)
-            }
-            if Self.isFnKey(e.keyCode) { return (fnHeld ? .suppress : .passThrough, nil) }
-            return (.passThrough, nil)
+            (.passThrough, claimed && e.otherModifiers ? .comboKey : nil)
+        case .keyDown: keyDown(e.keyCode, dictationCancellable: dictationCancellable)
+        case .keyUp: keyUp(e.keyCode)
         }
+    }
+
+    private mutating func fnChanged(down: Bool, otherModifiers: Bool) -> (KeyDisposition, KeyAction?) {
+        switch (fn, down) {
+        case (.released, true):
+            fn = .held(claimed: !otherModifiers)
+            return claimed ? (.suppress, .fnDown) : (.passThrough, nil)
+        case (.held(let wasClaimed), false):
+            fn = .released
+            return wasClaimed ? (.suppress, .fnUp) : (.passThrough, nil)
+        case (.held, true), (.released, false):
+            return (claimed ? .suppress : .passThrough, nil)
+        }
+    }
+
+    private mutating func keyDown(_ code: UInt16, dictationCancellable: Bool) -> (KeyDisposition, KeyAction?) {
+        if code == Self.escapeKeyCode && dictationCancellable {
+            escapeSuppressed = true
+            return (.suppress, .escape)
+        }
+        if Self.isFnKey(code) { return (fnHeld ? .suppress : .passThrough, nil) }
+        return (.passThrough, claimed ? .comboKey : nil)
+    }
+
+    private mutating func keyUp(_ code: UInt16) -> (KeyDisposition, KeyAction?) {
+        if code == Self.escapeKeyCode && escapeSuppressed {
+            escapeSuppressed = false
+            return (.suppress, nil)
+        }
+        return (Self.isFnKey(code) && fnHeld ? .suppress : .passThrough, nil)
     }
 
     /// Called when the tap was re-enabled after the system disabled it (the main thread was busy

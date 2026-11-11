@@ -28,6 +28,36 @@ import Testing
         #expect(t.handle(f5, dictationCancellable: false) == (.passThrough, .comboKey))
     }
 
+    @Test func fnsOwnRepeatEventsFollowTheClaim() {
+        var t = FnKeyTracker()
+        let fnKeyDown = KeyEventInput(kind: .keyDown, keyCode: 63, fnFlag: true)
+        let fnKeyUp = KeyEventInput(kind: .keyUp, keyCode: 63, fnFlag: true)
+        // A stray release with nothing held, and Fn's own key events while released, are the system's.
+        #expect(t.handle(fnUp, dictationCancellable: false) == (.passThrough, nil))
+        #expect(t.handle(fnKeyDown, dictationCancellable: false) == (.passThrough, nil))
+        #expect(t.handle(fnKeyUp, dictationCancellable: false) == (.passThrough, nil))
+        // While a claimed press is held, its repeats are swallowed and mean nothing new.
+        _ = t.handle(fnDown, dictationCancellable: false)
+        #expect(t.handle(fnDown, dictationCancellable: false) == (.suppress, nil))
+        #expect(t.handle(fnKeyDown, dictationCancellable: false) == (.suppress, nil))
+        #expect(t.handle(fnKeyUp, dictationCancellable: false) == (.suppress, nil))
+        #expect(t.handle(fnUp, dictationCancellable: false) == (.suppress, .fnUp))
+    }
+
+    @Test func unclaimedFnRepeatsPassThroughAndClaimNothing() {
+        var t = FnKeyTracker()
+        let cmdFn = KeyEventInput(kind: .flagsChanged, keyCode: 63, fnFlag: true, otherModifiers: true)
+        _ = t.handle(cmdFn, dictationCancellable: false)
+        #expect(t.handle(cmdFn, dictationCancellable: false) == (.passThrough, nil))
+        let a = KeyEventInput(kind: .keyDown, keyCode: 0, fnFlag: true, otherModifiers: true)
+        #expect(t.handle(a, dictationCancellable: false) == (.passThrough, nil))
+        let shift = KeyEventInput(kind: .flagsChanged, keyCode: 56, fnFlag: true, otherModifiers: true)
+        #expect(t.handle(shift, dictationCancellable: false) == (.passThrough, nil))
+        // Fn's own key events are swallowed while it is held at all, claimed or not.
+        #expect(t.handle(KeyEventInput(kind: .keyDown, keyCode: 63, fnFlag: true), dictationCancellable: false) == (.suppress, nil))
+        #expect(t.handle(KeyEventInput(kind: .keyUp, keyCode: 63, fnFlag: true), dictationCancellable: false) == (.suppress, nil))
+    }
+
     @Test func arrowKeysCarryFnFlagButAreNotFn() {
         var t = FnKeyTracker()
         let arrow = KeyEventInput(kind: .keyDown, keyCode: 123, fnFlag: true)
