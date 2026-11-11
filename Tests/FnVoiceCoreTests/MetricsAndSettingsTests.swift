@@ -166,6 +166,14 @@ extension MetricsTests {
         #expect(Vocabulary.merged(user: [], limit: 5).count == 5)
     }
 
+    @Test func everyMenuChoiceHasItsOwnLabel() {
+        for names in [DictationLanguage.allCases.map(\.displayName), RecognitionEngine.allCases.map(\.displayName),
+                      RefinementScope.allCases.map(\.displayName)] {
+            #expect(names.allSatisfy { !$0.isEmpty })
+            #expect(Set(names).count == names.count)
+        }
+    }
+
     @Test func recognitionEngineResolution() {
         #expect(RecognitionEngine.resolve(stored: nil, analyzerAvailable: true) == RecognitionEngine.preferredDefault)
         #expect(RecognitionEngine.resolve(stored: .legacy, analyzerAvailable: true) == .legacy)
