@@ -91,6 +91,17 @@ public struct OpenAICompatibleClient: LLMClient {
     }
 
     public func complete(system: String, user: String) async throws -> String {
+        let (data, response) = try await race(try request(system: system, user: user))
+        guard let http = response as? HTTPURLResponse else { throw LLMError.malformed }
+        switch http.statusCode {
+        case 200..<300: break
+        case 401, 403: throw LLMError.unauthorized(http.statusCode)
+        default: throw LLMError.http(http.statusCode)
+        }
+        return try Self.parseContent(data)
+    }
+
+    func request(system: String, user: String) throws -> URLRequest {
         guard let url = config.chatCompletionsURL else { throw LLMError.badURL }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -98,27 +109,15 @@ public struct OpenAICompatibleClient: LLMClient {
         let key = config.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         if !key.isEmpty { request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization") }
         request.httpBody = try JSONSerialization.data(withJSONObject: Self.requestBody(config: config, system: system, user: user))
+        return request
+    }
 
-        let session = self.session
-        let finalRequest = request
-        @Sendable func send() async -> Attempt {
-            do {
-                let (data, response) = try await session.data(for: finalRequest)
-                return .reply(data, response)
-            } catch let e as URLError where e.code == .timedOut {
-                return .failed(LLMError.timeout)
-            } catch let e as URLError where e.code == .cancelled {
-                return .failed(CancellationError())
-            } catch let e as URLError {
-                return .failed(LLMError.network(e.localizedDescription))
-            } catch {
-                return .failed(error)
-            }
-        }
-
-        let timeout = self.timeout
-        let hedgeAfter = self.hedgeAfter
-        let (data, response) = try await withThrowingTaskGroup(of: Attempt.self) { group in
+    /// Sends `request`, and once more after `hedgeAfter` if no reply has come; the first reply
+    /// wins. Fails at `timeout`, or with the first error once every attempt has failed.
+    private func race(_ request: URLRequest) async throws -> (Data, URLResponse) {
+        let session = self.session, timeout = self.timeout, hedgeAfter = self.hedgeAfter
+        @Sendable func send() async -> Attempt { await Self.attempt(request, on: session) }
+        return try await withThrowingTaskGroup(of: Attempt.self) { group in
             group.addTask { await send() }
             group.addTask {
                 try await Task.sleep(for: timeout)
@@ -150,14 +149,21 @@ public struct OpenAICompatibleClient: LLMClient {
             }
             throw firstError ?? LLMError.timeout
         }
+    }
 
-        guard let http = response as? HTTPURLResponse else { throw LLMError.malformed }
-        switch http.statusCode {
-        case 200..<300: break
-        case 401, 403: throw LLMError.unauthorized(http.statusCode)
-        default: throw LLMError.http(http.statusCode)
+    private static func attempt(_ request: URLRequest, on session: URLSession) async -> Attempt {
+        do {
+            let (data, response) = try await session.data(for: request)
+            return .reply(data, response)
+        } catch let e as URLError where e.code == .timedOut {
+            return .failed(LLMError.timeout)
+        } catch let e as URLError where e.code == .cancelled {
+            return .failed(CancellationError())
+        } catch let e as URLError {
+            return .failed(LLMError.network(e.localizedDescription))
+        } catch {
+            return .failed(error)
         }
-        return try Self.parseContent(data)
     }
 
     static func requestBody(config: LLMConfig, system: String, user: String) -> [String: Any] {
