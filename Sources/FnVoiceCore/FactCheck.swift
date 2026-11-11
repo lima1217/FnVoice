@@ -69,36 +69,36 @@ public enum FactCheck {
         let vocabLatin = Set(vocabulary.flatMap { latinWords(in: $0) })
 
         var r = Result()
-        var seen = Set<Fact>()
-        for f in active where f.kind != .negation && !outSet.contains(f) && seen.insert(f).inserted {
-            r.missing.append(f)
-        }
-        seen = []
-        for f in out where f.kind != .negation && !all.contains(f) && seen.insert(f).inserted {
-            if f.kind == .latin && vocabLatin.contains(f.value) { continue }
-            r.added.append(f)
-        }
+        r.missing = unique(active.filter { $0.kind != .negation && !outSet.contains($0) })
+        r.added = unique(out.filter { f in
+            f.kind != .negation && !all.contains(f) && !(f.kind == .latin && vocabLatin.contains(f.value))
+        })
         let activeSet = Set(active)
-        seen = []
-        for i in abandoned.sorted() {
-            let f = src[i].fact
-            if !activeSet.contains(f) && outSet.contains(f) && seen.insert(f).inserted { r.superseded.append(f) }
-        }
+        r.superseded = unique(abandoned.sorted().map { src[$0].fact }.filter { !activeSet.contains($0) && outSet.contains($0) })
 
         let negIn = active.filter { $0.kind == .negation }.count
         let negOut = out.filter { $0.kind == .negation }.count
         if negOut < negIn { r.missing.append(Fact(.negation, "否定 \(negIn)→\(negOut)")) }
         if negOut > negIn { r.added.append(Fact(.negation, "否定 \(negIn)→\(negOut)")) }
 
-        let lowerSource = source.lowercased(), lowerOutput = output.lowercased()
-        for v in vocabulary where latinWords(in: v).isEmpty {
-            if lowerSource.contains(v.lowercased()) && !lowerOutput.contains(v.lowercased()) {
-                r.missing.append(Fact(.term, v))
-            }
-        }
+        let lowerOutput = output.lowercased()
+        r.missing += missingTerms(vocabulary, source: source.lowercased(), output: lowerOutput)
         r.missingRequired = keep.filter { !lowerOutput.contains($0.lowercased()) }
         r.forbidden = drop.filter { lowerOutput.contains($0.lowercased()) }
         return r
+    }
+
+    /// First occurrence of each fact, in order.
+    static func unique(_ facts: [Fact]) -> [Fact] {
+        var seen = Set<Fact>()
+        return facts.filter { seen.insert($0).inserted }
+    }
+
+    /// Vocabulary terms with no English word in them (飞书) that the source says and the output lost.
+    static func missingTerms(_ vocabulary: [String], source: String, output: String) -> [Fact] {
+        vocabulary.filter { v in
+            latinWords(in: v).isEmpty && source.contains(v.lowercased()) && !output.contains(v.lowercased())
+        }.map { Fact(.term, $0) }
     }
 
     /// Facts in reading order.
